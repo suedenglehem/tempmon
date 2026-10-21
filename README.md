@@ -32,9 +32,9 @@ names itself `thermal-<hostname>` (real hostname, not hardcoded).
 - b760one (192.168.0.30) — live at /usr/local/sbin/{thermal-daemon,thermal-graph}
   + /etc/systemd/system/*.service; restarted 2026-10-21 with the hostname +
   power changes, verified (15 API series incl. cpu.W/gpu.W, page 200).
-- i7 (192.168.0.33) — live but on the pre-power copy (hostname still
-  hardcoded there, no power panels); redeploy from here to update
-  (its 14700K has RAPL, so it will show cpu.W too).
+- i7 (192.168.0.33) — live, current (redeployed 2026-10-21 via
+  `install.sh --trip 100`): dynamic title `thermal-i7`, all 5 panels
+  incl. cpu.W (14700K RAPL package-0) + gpu.W (2 GPUs summed), trip 100.
 
 ## Install on a fresh box
 ```
