@@ -1,0 +1,9 @@
+### Next steps
+1. Let it run. After the NEXT sudden shutdown, inspect:
+   - journalctl --list-boots (abrupt end = hard power loss)
+   - /var/log/thermal.log (last 5min), .1 (5-10min), .2 (10-15min)
+   - Look for cpu.Tdie -> 95C, or a temp spike, or values simply stopping
+     (no "daemon stop" marker = hard power loss).
+2. Watch live: tail -f /var/log/thermal.log
+3. Suspicion so far: Tctl 81-92C at ~69% scaling is hot; 1950X trips at Tdie 95C —
+   the daemon will show whether Tdie approaches trip before the next death.

@@ -1,0 +1,13 @@
+[Unit]
+Description=Thermal logger (cpu/gpu/disks every 3s -> /var/log/thermal.log)
+After=local-fs.target
+Wants=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/thermal-daemon
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

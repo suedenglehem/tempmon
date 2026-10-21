@@ -1,0 +1,186 @@
+#!/bin/sh
+# thermal-daemon — continuous temperature logger for sudden-shutdown forensics.
+#
+# Logs one line per sample (default every 3 s) to /var/log/thermal.log:
+#   <hh:mm:ss dd/mm/yyyy> cpu.Tctl=.. cpu.Tdie=.. gpu0=.. gpu1=.. gpu2=.. sda=.. sdb=.. sdc=.. sdd=.. sde=.. sdf=.. nvme0=.. nvme1=..
+# Sources:
+#   cpu   : AMD k10temp sysfs (Threadripper 1950X; hardware trip = Tdie 95C)
+#   gpu   : nvidia-smi (temperature.gpu)
+#   sda.. : smartctl (smartmontools) — attr 194 "Temperature_Celsius"
+#           (SSDs / most HDDs) or the "Current Drive Temperature" section
+#           (some Samsung / older drives). Needs root to open /dev/sdX —
+#           the systemd service runs as root.
+#   nvme  : sysfs nvme hwmon, Composite sensor (millidegrees)
+# A source that is momentarily unavailable shows as NA; the daemon never dies.
+# Marker lines record daemon start/stop and each rotation, so boot
+# boundaries are visible in the log.
+#
+# Rotation is self-managed (no logrotate): every ROTATE_EVERY samples
+# (default 100 = 5 min at 3 s) thermal.log is shifted to thermal.log.1 and
+# the existing .1 to .2 (oldest discarded) — thermal.log always holds the
+# last 5 minutes, .1/.2 extend the history to 15 min, at most 2 rotations.
+# A log file already stale on startup (survived a crash/reboot) is rotated
+# away before the first sample.
+#
+# Env overrides (testing): THERMAL_LOG, THERMAL_INTERVAL, THERMAL_ROTATE_EVERY.
+
+set -u
+
+LOG=${THERMAL_LOG:-/var/log/thermal.log}
+INTERVAL=${THERMAL_INTERVAL:-3}
+ROTATE_EVERY=${THERMAL_ROTATE_EVERY:-100}
+
+ts() { date '+%H:%M:%S %d/%m/%Y'; }
+mtemp() { awk -v r="$1" 'BEGIN{printf "%.1f", r/1000}'; }   # millidegrees -> C
+
+# ---------- sensor discovery (once; CPU hwmon retried briefly at startup) ----------
+find_cpu_hwmon() {
+    CPU_HWMON=""
+    for h in /sys/class/hwmon/hwmon*; do
+        if [ -r "$h/name" ] && [ "$(cat "$h/name" 2>/dev/null)" = "k10temp" ]; then
+            CPU_HWMON=$h
+            return
+        fi
+    done
+}
+find_cpu_hwmon
+_i=0
+while [ -z "$CPU_HWMON" ] && [ "$_i" -lt 20 ]; do   # up to 60 s (early boot)
+    sleep 3
+    _i=$((_i + 1))
+    find_cpu_hwmon
+done
+
+# "nvme0 <temp1_input path> nvme1 <temp1_input path> ..."
+NVME_HWMONS=""
+for h in /sys/class/hwmon/hwmon*; do
+    [ -r "$h/name" ] || continue
+    [ "$(cat "$h/name" 2>/dev/null)" = "nvme" ] || continue
+    [ -r "$h/temp1_input" ] || continue
+    dev=$(readlink -f "$h/device" 2>/dev/null | grep -o 'nvme[0-9]' | head -n1)
+    [ -n "$dev" ] && NVME_HWMONS="$NVME_HWMONS $dev $h/temp1_input"
+done
+
+SATA_DISKS=""
+if command -v lsblk >/dev/null 2>&1; then
+    SATA_DISKS=$(lsblk -dno NAME,TYPE 2>/dev/null | awk '$2=="disk" && $1 ~ /^sd./ {print $1}' | sort)
+fi
+
+HAVE_GPU=0
+command -v nvidia-smi >/dev/null 2>&1 && HAVE_GPU=1
+HAVE_SMART=0
+command -v smartctl >/dev/null 2>&1 && HAVE_SMART=1
+
+# ---------- logging / rotation ----------
+rotate() {
+    exec 9>&-
+    if [ -f "$LOG.1" ]; then
+        mv -f "$LOG.1" "$LOG.2"
+        _msg="rotated: new $LOG; $LOG.1 = prev window; $LOG.2 = older (oldest discarded)"
+    else
+        _msg="rotated: new $LOG; $LOG.1 = prev window"
+    fi
+    mv -f "$LOG" "$LOG.1"
+    exec 9>>"$LOG"
+    printf '%s -- %s --\n' "$(ts)" "$_msg" >&9
+}
+
+sample() {
+    _ts=$(ts)
+    line="$_ts"
+
+    if [ -n "$CPU_HWMON" ]; then
+        _t=$(cat "$CPU_HWMON/temp1_input" 2>/dev/null) || _t=""
+        _d=$(cat "$CPU_HWMON/temp2_input" 2>/dev/null) || _d=""
+        if [ -n "$_t" ]; then line="$line cpu.Tctl=$(mtemp "$_t")"; else line="$line cpu.Tctl=NA"; fi
+        if [ -n "$_d" ]; then line="$line cpu.Tdie=$(mtemp "$_d")"; else line="$line cpu.Tdie=NA"; fi
+    else
+        line="$line cpu.Tctl=NA cpu.Tdie=NA"
+    fi
+
+    if [ "$HAVE_GPU" = 1 ]; then
+        _n=0
+        for _g in $(timeout 5 nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits 2>/dev/null); do
+            line="$line gpu$_n=$_g"
+            _n=$((_n + 1))
+        done
+        [ "$_n" = 0 ] && line="$line gpu=NA"
+    fi
+
+    if [ -n "$SATA_DISKS" ] && [ "$HAVE_SMART" = 1 ]; then
+        _tmp=$(mktemp 2>/dev/null) || _tmp="/tmp/thermal_$$"
+        : >"$_tmp"
+        for _dsk in $SATA_DISKS; do
+            (
+                _t=$(timeout 8 smartctl -A "/dev/$_dsk" 2>/dev/null)
+                _v=$(printf '%s\n' "$_t" | awk '$1=="194" && /Temperature_Celsius/ {print $10; exit}')
+                [ -z "$_v" ] && _v=$(printf '%s\n' "$_t" | awk '/Current Drive Temperature/ {print $4; exit}')
+                [ -z "$_v" ] && _v=NA
+                printf '%s=%s\n' "$_dsk" "$_v" >>"$_tmp"
+            ) &
+        done
+        wait
+        for _kv in $(sort "$_tmp"); do
+            line="$line $_kv"
+        done
+        rm -f "$_tmp"
+    fi
+
+    # NVME_HWMONS is paired words: dev path dev path ...
+    set -- $NVME_HWMONS
+    while [ $# -ge 2 ]; do
+        _dev=$1; _p=$2; shift 2
+        _r=$(cat "$_p" 2>/dev/null) || _r=""
+        if [ -n "$_r" ]; then line="$line $_dev=$(mtemp "$_r")"; else line="$line $_dev=NA"; fi
+    done
+
+    printf '%s\n' "$line" >&9
+}
+
+exec 9>>"$LOG" || { echo "thermal-daemon: cannot write $LOG" >&2; exit 1; }
+
+# epoch of the log's first line ("" if unparseable). Current format is
+# "HH:MM:SS DD/MM/YYYY" — this date(1) rejects DD/MM/YYYY and time-first
+# order, so normalize to ISO; legacy lines were single ISO-8601 tokens.
+log_first_epoch() {
+    _l1=$(head -n1 "$LOG" 2>/dev/null)
+    set -- $_l1
+    [ $# -ge 1 ] || return 1
+    _ts1=$1
+    _ts2=${2-}
+    case "$_ts2" in
+        [0-9][0-9]/[0-9][0-9]/[0-9][0-9][0-9][0-9])
+            _dd=${_ts2%%/*}; _r=${_ts2#*/}; _mm=${_r%%/*}; _yy=${_r#*/}
+            date -d "$_yy-$_mm-$_dd $_ts1" +%s 2>/dev/null
+            ;;
+        *)
+            date -d "$_ts1" +%s 2>/dev/null
+            ;;
+    esac
+}
+
+# a log surviving a crash/reboot is stale — rotate it away before sampling
+if [ -f "$LOG" ]; then
+    _ep=$(log_first_epoch) || _ep=""
+    if [ -n "$_ep" ] && [ $(( $(date +%s) - _ep )) -gt $(( ROTATE_EVERY * INTERVAL )) ]; then
+        rotate
+    fi
+fi
+
+_ngpu=$( [ "$HAVE_GPU" = 1 ] && timeout 5 nvidia-smi -L 2>/dev/null | wc -l || echo 0 )
+_nsata=$( [ -n "$SATA_DISKS" ] && [ "$HAVE_SMART" = 1 ] && echo "$SATA_DISKS" | wc -w || echo 0 )
+_nvme=$(echo $NVME_HWMONS | wc -w | awk '{print int($1/2)}')
+printf '%s -- daemon start: pid=%s interval=%ss rotate_every=%s cpu=%s gpu=nvidia-smi(%s) nvme=hwmon(%s) sata=smartctl(%s) --\n' \
+    "$(ts)" "$$" "$INTERVAL" "$ROTATE_EVERY" \
+    "$( [ -n "$CPU_HWMON" ] && basename "$CPU_HWMON" || echo none )" \
+    "$_ngpu" "$_nvme" "$_nsata" >&9
+
+trap 'printf "%s -- daemon stop (signal) --\n" "$(ts)" >&9 2>/dev/null; exec 9>&-; exit 0' TERM INT
+
+n=0
+while :; do
+    sample
+    n=$(( n + 1 ))
+    [ $(( n % ROTATE_EVERY )) -eq 0 ] && rotate
+    sleep "$INTERVAL"
+done

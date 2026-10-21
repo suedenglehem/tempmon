@@ -1,0 +1,13 @@
+[Unit]
+Description=Thermal graph web app (thermal.log on 0.0.0.0:9066)
+After=local-fs.target thermal-daemon.service
+Wants=thermal-daemon.service
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/sbin/thermal-graph
+Environment=THERMAL_WEB_HOST=0.0.0.0 THERMAL_WEB_PORT=9066
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
