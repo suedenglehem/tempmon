@@ -2,7 +2,8 @@
 """thermal-graph — tiny web dashboard for /var/log/thermal.log (+ .1/.2).
 
 Serves 0.0.0.0:9066 (override: THERMAL_WEB_HOST / THERMAL_WEB_PORT /
-THERMAL_LOG_DIR). Stdlib only, no CDN — the page is fully self-contained.
+THERMAL_LOG_DIR / THERMAL_WEB_TRIP_C — dashed cpu trip line, default 95).
+Stdlib only, no CDN — the page is fully self-contained.
 
 Routes:
   /           single-page dashboard (inline HTML/CSS/JS)
@@ -20,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOST = os.environ.get("THERMAL_WEB_HOST", "0.0.0.0")
 PORT = int(os.environ.get("THERMAL_WEB_PORT", "9066"))
+TRIP_C = os.environ.get("THERMAL_WEB_TRIP_C", "95")
 LOGDIR = os.environ.get("THERMAL_LOG_DIR", "/var/log")
 LOGS = ("thermal.log", "thermal.log.1", "thermal.log.2")
 MAX_AGE = 20 * 60  # ignore lines older than this (defensive; logs hold 15 min)
@@ -147,7 +149,7 @@ const COLORS={
   'nvme0':'#c77dff','nvme1':'#9d4edd'
 };
 const GROUPS=[
-  {title:'cpu temps',        keys:['cpu.Tctl','cpu.Tdie'], trip:95},
+  {title:'cpu temps',        keys:['cpu.Tctl','cpu.Tdie'], trip:__TRIP__},
   {title:'nvme temps',       keys:['nvme0','nvme1']},
   {title:'other disk temps', keys:['sda','sdb','sdc','sdd','sde','sdf']},
   {title:'gpu temps',        keys:['gpu0','gpu1','gpu2']}
@@ -287,7 +289,7 @@ function drawPanel(p){
     ctx.setLineDash([6,4]); ctx.strokeStyle='rgba(255,59,48,.8)'; ctx.lineWidth=1.2;
     ctx.beginPath(); ctx.moveTo(L,Y(p.trip)); ctx.lineTo(W-R,Y(p.trip)); ctx.stroke(); ctx.setLineDash([]);
     ctx.fillStyle='rgba(255,59,48,.9)'; ctx.textAlign='right'; ctx.textBaseline='bottom';
-    ctx.fillText('Tdie trip '+p.trip+'°',W-R-4,Y(p.trip)-3);
+    ctx.fillText('cpu trip '+p.trip+'°',W-R-4,Y(p.trip)-3);
   }
   for(const [t,kind] of WD.events){
     ctx.setLineDash([4,4]);
@@ -345,6 +347,7 @@ window.addEventListener('resize',drawAll);
 </script>
 </body></html>
 """
+PAGE = PAGE.replace("__TRIP__", TRIP_C)
 
 
 class Handler(BaseHTTPRequestHandler):

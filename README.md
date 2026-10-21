@@ -5,10 +5,11 @@ repeated hard-power-loss reboots — log all temps every 3 s so the last 15 min
 survive for post-mortem, and graph them on the LAN.
 
 ## Contents
-- `thermal-daemon` — POSIX sh logger: cpu (k10temp Tctl/Tdie), gpu (nvidia-smi),
-  sda-sdf (smartctl, needs root), nvme (sysfs hwmon) every 3 s →
-  /var/log/thermal.log; self-rotates ×2 (last 15 min); start/stop/rotate markers.
-  Test hooks: THERMAL_LOG / THERMAL_INTERVAL / THERMAL_ROTATE_EVERY.
+- `thermal-daemon` — POSIX sh logger: cpu (AMD k10temp / Intel coretemp —
+  fields stay cpu.Tctl=package/control, cpu.Tdie=die/core0), gpu (nvidia-smi),
+  all SATA disks (smartctl, needs root), nvme (sysfs hwmon) every 3 s →
+  /var/log/thermal.log; self-rotates ×2 (last 15 min); start/stop/rotate
+  markers. Test hooks: THERMAL_LOG / THERMAL_INTERVAL / THERMAL_ROTATE_EVERY.
 - `thermal-daemon.service` — systemd unit (Restart=always, runs as root for smartctl).
 - `thermal-graph` — stdlib-only Python (ThreadingHTTPServer), zero CDN;
   `/` dashboard (4 stacked canvas panels: cpu / nvme / other disk / gpu) +
@@ -26,11 +27,16 @@ survive for post-mortem, and graph them on the LAN.
 
 ## Install on a fresh box
 ```
-sudo sh install.sh --lan <viewer-ip> [--lan <viewer-ip> ...]
+sudo sh install.sh [--trip C] --lan <viewer-ip> [--lan <viewer-ip> ...]
 ```
-The `--lan` flags add source-restricted ufw rules for the dashboard port
-(only when ufw is active; repeated flag = several viewers). Without them the
-script prints the ufw command to run.
+- `--trip C` — CPU trip temperature for the dashed line on the cpu panel
+  (default 95 = AMD 1950X; 100 for Intel i7-14700K). Written into the graph
+  unit as THERMAL_WEB_TRIP_C.
+- `--lan IP` (repeatable) — source-restricted ufw rule for the dashboard port;
+  only applied when ufw is active (with inactive ufw the port is simply open).
+  Without any --lan the script prints the ufw command to run.
+- Works on AMD (k10temp) and Intel (coretemp) CPUs; missing sources (no GPU
+  driver, no NVMe, disks without a temp attribute) just read NA.
 
 Manual install (no script):
 ```

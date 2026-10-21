@@ -5,7 +5,7 @@ Wants=thermal-daemon.service
 
 [Service]
 ExecStart=/usr/bin/python3 /usr/local/sbin/thermal-graph
-Environment=THERMAL_WEB_HOST=0.0.0.0 THERMAL_WEB_PORT=9066
+Environment=THERMAL_WEB_HOST=0.0.0.0 THERMAL_WEB_PORT=9066 THERMAL_WEB_TRIP_C=95
 Restart=always
 RestartSec=2
 

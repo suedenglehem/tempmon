@@ -4,7 +4,9 @@
 # Logs one line per sample (default every 3 s) to /var/log/thermal.log:
 #   <hh:mm:ss dd/mm/yyyy> cpu.Tctl=.. cpu.Tdie=.. gpu0=.. gpu1=.. gpu2=.. sda=.. sdb=.. sdc=.. sdd=.. sde=.. sdf=.. nvme0=.. nvme1=..
 # Sources:
-#   cpu   : AMD k10temp sysfs (Threadripper 1950X; hardware trip = Tdie 95C)
+#   cpu   : AMD k10temp (temp1=Tctl temp2=Tdie) or Intel coretemp (temp1=
+#           Package temp2=core0) sysfs — fields stay cpu.Tctl/cpu.Tdie on
+#           both; the trip temp is per-CPU (1950X: Tdie 95C, i7-14700K: 100C)
 #   gpu   : nvidia-smi (temperature.gpu)
 #   sda.. : smartctl (smartmontools) — attr 194 "Temperature_Celsius"
 #           (SSDs / most HDDs) or the "Current Drive Temperature" section
@@ -37,10 +39,10 @@ mtemp() { awk -v r="$1" 'BEGIN{printf "%.1f", r/1000}'; }   # millidegrees -> C
 find_cpu_hwmon() {
     CPU_HWMON=""
     for h in /sys/class/hwmon/hwmon*; do
-        if [ -r "$h/name" ] && [ "$(cat "$h/name" 2>/dev/null)" = "k10temp" ]; then
-            CPU_HWMON=$h
-            return
-        fi
+        [ -r "$h/name" ] || continue
+        case "$(cat "$h/name" 2>/dev/null)" in
+            k10temp|coretemp) CPU_HWMON=$h; return ;;
+        esac
     done
 }
 find_cpu_hwmon

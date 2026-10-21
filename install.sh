@@ -6,6 +6,8 @@
 #
 #   --lan IP   open the dashboard port to IP via ufw (repeatable). Applied only
 #              when ufw is active; without --lan the command to run is printed.
+#   --trip C   CPU trip temperature for the dashboard's dashed line (default
+#              95 for the AMD 1950X; e.g. 100 for an Intel i7-14700K).
 #
 # Installs:
 #   - smartmontools (smartctl) — disk temp retrieval (SATA disks; NVMe temps
@@ -22,11 +24,15 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 WEB_PORT=9066
 
 LAN_IPS=""
+TRIP_C=95
 while [ $# -gt 0 ]; do
     case "$1" in
         --lan)
             [ $# -ge 2 ] || { echo "--lan needs an IP" >&2; exit 1; }
             LAN_IPS="$LAN_IPS $2"; shift ;;
+        --trip)
+            [ $# -ge 2 ] || { echo "--trip needs a value" >&2; exit 1; }
+            TRIP_C="$2"; shift ;;
         *)
             echo "unknown argument: $1" >&2; exit 1 ;;
     esac
@@ -50,9 +56,10 @@ if ! command -v smartctl >/dev/null 2>&1; then
 fi
 echo "smartctl: $(command -v smartctl)"
 
-# nudge the AMD CPU hwmon driver; the daemon tolerates absence (cpu = NA)
-if [ -d /sys/class/hwmon ] && ! grep -qs '^k10temp$' /sys/class/hwmon/*/name 2>/dev/null; then
-    modprobe k10temp 2>/dev/null || true
+# nudge the CPU hwmon driver (AMD k10temp / Intel coretemp); the daemon
+# tolerates absence (cpu fields = NA)
+if [ -d /sys/class/hwmon ] && ! grep -qsE '^(k10temp|coretemp)$' /sys/class/hwmon/*/name 2>/dev/null; then
+    modprobe k10temp 2>/dev/null || modprobe coretemp 2>/dev/null || true
 fi
 
 # ---- 2. files ---------------------------------------------------------------
@@ -62,6 +69,9 @@ for f in thermal-daemon thermal-graph thermal-daemon.service thermal-graph.servi
         exit 1
     }
 done
+# pin the cpu trip line in the graph unit (idempotent full-line replace)
+sed -i "s|^Environment=.*|Environment=THERMAL_WEB_HOST=0.0.0.0 THERMAL_WEB_PORT=$WEB_PORT THERMAL_WEB_TRIP_C=$TRIP_C|" \
+    "$SCRIPT_DIR/thermal-graph.service"
 install -m 755 "$SCRIPT_DIR/thermal-daemon" /usr/local/sbin/thermal-daemon
 install -m 755 "$SCRIPT_DIR/thermal-graph" /usr/local/sbin/thermal-graph
 install -m 644 "$SCRIPT_DIR/thermal-daemon.service" /etc/systemd/system/thermal-daemon.service
