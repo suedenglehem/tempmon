@@ -442,7 +442,9 @@ document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===b));
   hwTabOn=b.dataset.tab==='hw';
   document.getElementById('panels').style.display=hwTabOn?'none':'';
-  document.getElementById('hwtab').style.display=hwTabOn?'':'none';
+  // explicit 'block': #hwtab is display:none in the stylesheet, and
+  // style.display='' would only drop the inline override back to that
+  document.getElementById('hwtab').style.display=hwTabOn?'block':'none';
   if(hwTabOn) loadHardware(true);
 });
 loadHardware(false);
