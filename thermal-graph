@@ -152,12 +152,11 @@ const COLORS={
   'nvme0':'#c77dff','nvme1':'#9d4edd'
 };
 const GROUPS=[
+  {title:'cpu+gpu power',     keys:['gpu.W','cpu.W'], unit:'W', right:['cpu.W']},
+  {title:'gpu temps',         keys:['gpu0','gpu1','gpu2']},
   {title:'cpu temps',         keys:['cpu.Tctl','cpu.Tdie'], trip:__TRIP__},
-  {title:'cpu power',         keys:['cpu.W'], unit:'W'},
-  {title:'gpu power (total)', keys:['gpu.W'], unit:'W'},
   {title:'nvme temps',        keys:['nvme0','nvme1']},
-  {title:'other disk temps',  keys:['sda','sdb','sdc','sdd','sde','sdf']},
-  {title:'gpu temps',         keys:['gpu0','gpu1','gpu2']}
+  {title:'other disk temps',  keys:['sda','sdb','sdc','sdd','sde','sdf']}
 ];
 const GAP=10;   // break line if sample gap > GAP s
 let DATA=null, hidden=new Set(), winMin=15;
@@ -175,6 +174,7 @@ for(const g of GROUPS){
   panelsEl.appendChild(sec);
   const cv=sec.querySelector('canvas');
   const p={title:g.title, keys:g.keys, trip:g.trip, unit:g.unit||'°',
+           right:new Set(g.right||[]),
            cv, ctx:cv.getContext('2d'), wrap:sec.querySelector('.chartwrap'),
            tip:sec.querySelector('.tip'), chips:sec.querySelector('.chips'),
            hoverT:null, chipEls:{}};
@@ -265,22 +265,39 @@ function drawPanel(p){
     ctx.textAlign='center'; ctx.textBaseline='middle';
     ctx.fillText('waiting for sample data…',W/2,H/2); return; }
   const pts=seriesPts(p,WD);
-  // per-panel y range from its own data (trip line included on cpu panel)
-  let vmin=1e9, vmax=-1e9;
-  for(const k in pts) for(const [t,v] of pts[k]){ if(v<vmin)vmin=v; if(v>vmax)vmax=v; }
-  if(p.trip!==undefined){ vmin=Math.min(vmin,p.trip); vmax=Math.max(vmax,p.trip); }
-  if(!isFinite(vmin)){ vmin=0; vmax=100; }
-  const pad=Math.max(2,(vmax-vmin)*0.12);
-  const y0=Math.floor((vmin-pad)/5)*5, y1=Math.ceil((vmax+pad)/5)*5;
-  const L=46,R=14,T=12,B=24, pw=W-L-R, ph=H-T-B;
+  // per-axis y ranges — the power panel keeps gpu.W on the left axis and
+  // cpu.W on the right axis, each auto-scaled to its own data
+  const axOf=k=>p.right.has(k)?'R':'L';
+  const vmin={L:1e9,R:1e9}, vmax={L:-1e9,R:-1e9};
+  for(const k in pts) for(const [t,v] of pts[k]){ const a=axOf(k);
+    if(v<vmin[a])vmin[a]=v; if(v>vmax[a])vmax[a]=v; }
+  if(p.trip!==undefined){ vmin.L=Math.min(vmin.L,p.trip); vmax.L=Math.max(vmax.L,p.trip); }
+  const hasR=p.right.size>0&&isFinite(vmin.R);
+  const scale=a=>{
+    let lo=vmin[a], hi=vmax[a];
+    if(!isFinite(lo)){ lo=0; hi=100; }
+    const pad=Math.max(2,(hi-lo)*0.12);
+    return [Math.floor((lo-pad)/5)*5, Math.ceil((hi+pad)/5)*5];
+  };
+  const [y0L,y1L]=scale('L');
+  const [y0R,y1R]=hasR?scale('R'):[y0L,y1L];
+  const L=46,R=hasR?46:14,T=12,B=24, pw=W-L-R, ph=H-T-B;
   const X=t=>L+(t-WD.x0)/(WD.x1-WD.x0)*pw;
-  const Y=v=>T+ph-(v-y0)/(y1-y0)*ph;
+  const YL=v=>T+ph-(v-y0L)/(y1L-y0L)*ph;
+  const YR=v=>T+ph-(v-y0R)/(y1R-y0R)*ph;
+  const Y=(k,v)=>axOf(k)==='R'?YR(v):YL(v);
   ctx.font='11px system-ui';
-  for(let v=Math.ceil(y0/yStep(y1-y0))*yStep(y1-y0);v<=y1;v+=yStep(y1-y0)){
+  for(let v=Math.ceil(y0L/yStep(y1L-y0L))*yStep(y1L-y0L);v<=y1L;v+=yStep(y1L-y0L)){
     ctx.strokeStyle='rgba(255,255,255,.07)';
-    ctx.beginPath(); ctx.moveTo(L,Y(v)); ctx.lineTo(W-R,Y(v)); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(L,YL(v)); ctx.lineTo(W-R,YL(v)); ctx.stroke();
     ctx.fillStyle='rgba(255,255,255,.45)'; ctx.textAlign='right'; ctx.textBaseline='middle';
-    ctx.fillText(Math.round(v)+p.unit,L-6,Y(v));
+    ctx.fillText(Math.round(v)+p.unit,L-6,YL(v));
+  }
+  if(hasR){
+    for(let v=Math.ceil(y0R/yStep(y1R-y0R))*yStep(y1R-y0R);v<=y1R;v+=yStep(y1R-y0R)){
+      ctx.fillStyle='rgba(255,214,10,.7)'; ctx.textAlign='left'; ctx.textBaseline='middle';
+      ctx.fillText(Math.round(v)+p.unit,W-R+6,YR(v));
+    }
   }
   const span=WD.x1-WD.x0, units=[10,15,30,60,120,300];
   const step=units.find(u=>span/u<=8)||600;
@@ -290,11 +307,11 @@ function drawPanel(p){
     ctx.beginPath(); ctx.moveTo(X(t),T); ctx.lineTo(X(t),T+ph); ctx.stroke();
     ctx.fillStyle='rgba(255,255,255,.45)'; ctx.fillText(fmtT(t),X(t),T+ph+5);
   }
-  if(p.trip!==undefined&&p.trip>=y0&&p.trip<=y1){
+  if(p.trip!==undefined&&p.trip>=y0L&&p.trip<=y1L){
     ctx.setLineDash([6,4]); ctx.strokeStyle='rgba(255,59,48,.8)'; ctx.lineWidth=1.2;
-    ctx.beginPath(); ctx.moveTo(L,Y(p.trip)); ctx.lineTo(W-R,Y(p.trip)); ctx.stroke(); ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(L,YL(p.trip)); ctx.lineTo(W-R,YL(p.trip)); ctx.stroke(); ctx.setLineDash([]);
     ctx.fillStyle='rgba(255,59,48,.9)'; ctx.textAlign='right'; ctx.textBaseline='bottom';
-    ctx.fillText('cpu trip '+p.trip+p.unit,W-R-4,Y(p.trip)-3);
+    ctx.fillText('cpu trip '+p.trip+p.unit,W-R-4,YL(p.trip)-3);
   }
   for(const [t,kind] of WD.events){
     ctx.setLineDash([4,4]);
@@ -310,13 +327,13 @@ function drawPanel(p){
     ctx.beginPath();
     let pen=false, prev=null;
     for(const [t,v] of a){
-      if(!pen||prev!==null&&(t-prev)>GAP){ ctx.moveTo(X(t),Y(v)); pen=true; }
-      else ctx.lineTo(X(t),Y(v));
+      if(!pen||prev!==null&&(t-prev)>GAP){ ctx.moveTo(X(t),Y(k,v)); pen=true; }
+      else ctx.lineTo(X(t),Y(k,v));
       prev=t;
     }
     ctx.stroke();
     if(a.length===1){ ctx.fillStyle=COLORS[k];
-      ctx.beginPath(); ctx.arc(X(a[0][0]),Y(a[0][1]),2.5,0,7); ctx.fill(); }
+      ctx.beginPath(); ctx.arc(X(a[0][0]),Y(k,a[0][1]),2.5,0,7); ctx.fill(); }
   }
   if(p.hoverT!==null&&p.hoverT>=WD.x0&&p.hoverT<=WD.x1){
     ctx.strokeStyle='rgba(255,255,255,.35)'; ctx.lineWidth=1;
