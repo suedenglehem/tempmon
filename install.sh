@@ -82,9 +82,12 @@ install -m 644 "$SCRIPT_DIR/thermal-daemon.service" /etc/systemd/system/thermal-
 install -m 644 "$SCRIPT_DIR/thermal-graph.service" /etc/systemd/system/thermal-graph.service
 
 # ---- 3. services ------------------------------------------------------------
+# enable + restart (NOT enable --now): --now only STARTS stopped services,
+# so an upgrade with the services already running would keep the old code
+# live and silently ship the new binaries without ever using them.
 systemctl daemon-reload
-systemctl enable --now thermal-daemon.service
-systemctl enable --now thermal-graph.service
+systemctl enable thermal-daemon.service thermal-graph.service
+systemctl restart thermal-daemon.service thermal-graph.service
 
 # ---- 4. firewall (optional) --------------------------------------------------
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
