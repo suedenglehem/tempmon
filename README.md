@@ -15,6 +15,10 @@ survive for post-mortem, and graph them on the LAN.
   `/api/data` JSON. Env: THERMAL_WEB_HOST (0.0.0.0), THERMAL_WEB_PORT (9066).
 - `thermal-graph.service` — systemd unit (Restart=always, enabled).
 - `thermal.txt` — post-mortem inspection notes (what to look for after a death).
+- `install.sh` — one-shot installer (Debian/Ubuntu, root): installs
+  **smartmontools** (disk temp retrieval), the two programs and their units,
+  enables + starts both services, optionally opens the port via ufw, and
+  prints the first samples.
 
 ## Installed on b760one (verified byte-identical to these copies, 2026-10-21)
 - /usr/local/sbin/thermal-daemon, /usr/local/sbin/thermal-graph
@@ -22,6 +26,15 @@ survive for post-mortem, and graph them on the LAN.
 
 ## Install on a fresh box
 ```
+sudo sh install.sh --lan <viewer-ip> [--lan <viewer-ip> ...]
+```
+The `--lan` flags add source-restricted ufw rules for the dashboard port
+(only when ufw is active; repeated flag = several viewers). Without them the
+script prints the ufw command to run.
+
+Manual install (no script):
+```
+sudo apt-get install -y smartmontools      # disk temp retrieval (smartctl)
 sudo cp -a thermal-daemon thermal-graph /usr/local/sbin/
 sudo cp -a thermal-daemon.service thermal-graph.service /etc/systemd/system/
 sudo systemctl daemon-reload
