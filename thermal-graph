@@ -6,11 +6,19 @@ THERMAL_LOG_DIR / THERMAL_WEB_TRIP_C — dashed cpu trip line, default 95).
 Stdlib only, no CDN — the page is fully self-contained.
 
 Routes:
-  /           single-page dashboard (inline HTML/CSS/JS)
-  /api/data   JSON parsed from the three log files on every request:
-              {"ok":true,"t0":epoch,"t1":epoch,"now":epoch,
-               "series":{"cpu.Tctl":[[sec_offset,value],...],...},
-               "events":[[sec_offset,"start|stop|rotated"],...]}
+  /            single-page dashboard (inline HTML/CSS/JS); "live" tab (charts)
+               and "hardware" tab (knob -> device identity tables)
+  /api/data    JSON parsed from the three log files on every request:
+               {"ok":true,"t0":epoch,"t1":epoch,"now":epoch,
+                "series":{"cpu.Tctl":[[sec_offset,value],...],...},
+                "events":[[sec_offset,"start|stop|rotated"],...]}
+  /api/hardware JSON the thermal-daemon wrote at startup (THERMAL_HW_FILE,
+               default /var/lib/thermal/hardware.json): host/cpu/gpu/disk
+               identities for the hardware tab
+
+Panels are built from the series actually present in the logs: a source this
+host doesn't have (no NVMe, 2 GPUs instead of 3, disks named beyond sdf)
+simply gets no chip / no panel.
 """
 import json
 import os
@@ -26,6 +34,7 @@ TRIP_C = os.environ.get("THERMAL_WEB_TRIP_C", "95")
 HOSTNAME = socket.gethostname()
 LOGDIR = os.environ.get("THERMAL_LOG_DIR", "/var/log")
 LOGS = ("thermal.log", "thermal.log.1", "thermal.log.2")
+HW_FILE = os.environ.get("THERMAL_HW_FILE", "/var/lib/thermal/hardware.json")
 MAX_AGE = 20 * 60  # ignore lines older than this (defensive; logs hold 15 min)
 
 RE_NEW = re.compile(r"^(\d{2}):(\d{2}):(\d{2}) (\d{2})/(\d{2})/(\d{4}) (.*)$")
@@ -101,6 +110,16 @@ def api_payload():
     }
 
 
+def hw_payload():
+    try:
+        with open(HW_FILE, "r", encoding="utf-8", errors="replace") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {"ok": False,
+                "error": "no hardware inventory yet (written by the daemon at startup)"}
+    return {"ok": True, "hardware": data}
+
+
 PAGE = r"""<!doctype html>
 <html><head>
 <meta charset="utf-8">
@@ -131,42 +150,55 @@ h1{font-size:18px;margin:0;font-weight:650}
 .tt-t{opacity:.6;margin-bottom:4px;font-variant-numeric:tabular-nums}
 .tt-r{display:flex;align-items:center;gap:6px;font-variant-numeric:tabular-nums}
 .tt-r b{margin-left:auto;padding-left:10px}
+.wsep{width:1px;background:#2a3140;margin:3px 4px;flex:none}
+#hwtab{display:none}
+.hwinfo{margin:10px 2px;font-size:13px}
+table{border-collapse:collapse;width:100%;margin:4px 0 18px;font-size:13px}
+th,td{text-align:left;padding:5px 10px;border-bottom:1px solid #232936}
+th{opacity:.6;font-size:11.5px;letter-spacing:.05em;text-transform:uppercase}
+.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+.muted{opacity:.55}
+.knob{white-space:nowrap}
 </style></head>
 <body>
 <header>
   <h1>thermal — __HOST__</h1>
   <div class="status" id="status">connecting…</div>
   <div class="winbtns">
+    <button class="tab on" data-tab="live">live</button>
+    <button class="tab" data-tab="hw">hardware</button>
+    <span class="wsep"></span>
     <button data-w="5">5m</button>
     <button data-w="10">10m</button>
     <button data-w="15" class="on">15m</button>
   </div>
 </header>
 <div id="panels"></div>
+<div id="hwtab"><div id="hw-body"></div></div>
 <script>
-const COLORS={
-  'cpu.Tctl':'#ff8c42','cpu.Tdie':'#ff3b30',
-  'gpu0':'#4cc9f0','gpu1':'#4895ef','gpu2':'#7b8cff',
-  'cpu.W':'#ffd60a','gpu.W':'#f06595',
-  'sda':'#b5e48c','sdb':'#7cb518','sdc':'#90be6d','sdd':'#f9c74f','sde':'#a3b18a','sdf':'#d9d2c5',
-  'nvme0':'#c77dff','nvme1':'#9d4edd'
-};
-const GROUPS=[
-  {title:'cpu+gpu power',     keys:['gpu.W','cpu.W'], unit:'W', right:['cpu.W']},
-  {title:'gpu temps',         keys:['gpu0','gpu1','gpu2']},
-  {title:'cpu temps',         keys:['cpu.Tctl','cpu.Tdie'], trip:__TRIP__},
-  {title:'nvme temps',        keys:['nvme0','nvme1']},
-  {title:'other disk temps',  keys:['sda','sdb','sdc','sdd','sde','sdf']}
+const SPECIAL_COLORS={'cpu.Tctl':'#ff8c42','cpu.Tdie':'#ff3b30','cpu.W':'#ffd60a','gpu.W':'#f06595'};
+const PALETTE=['#4cc9f0','#4895ef','#7b8cff','#b5e48c','#7cb518','#90be6d','#f9c74f','#a3b18a','#d9d2c5','#c77dff','#9d4edd','#ff5d8f','#30d158','#00c2d1','#f2a104','#b388ff','#8ecae6','#ffb347'];
+const colorOf={};   // key -> color, assigned once so colors stay stable across polls
+function colorFor(k){ if(!colorOf[k]) colorOf[k]=SPECIAL_COLORS[k]||PALETTE[Object.keys(colorOf).length%PALETTE.length]; return colorOf[k]; }
+const natSort=(a,b)=>{ const x=+((a.match(/[0-9]+$/)||['0'])[0]), y=+((b.match(/[0-9]+$/)||['0'])[0]); return x-y||a.localeCompare(b); };
+// panels are built from the series the daemon actually logs on THIS host:
+// a source that is absent (no NVMe, 2 GPUs instead of 3, disks past sdf)
+// simply gets no chips and no panel
+const GROUP_DEFS=[
+  {title:'cpu+gpu power', unit:'W', right:['cpu.W'], pick:ps=>['gpu.W','cpu.W'].filter(k=>ps.has(k))},
+  {title:'gpu temps',     pick:ps=>[...ps].filter(k=>/^gpu[0-9]+$/.test(k)).sort(natSort)},
+  {title:'cpu temps',     trip:__TRIP__, pick:ps=>['cpu.Tctl','cpu.Tdie'].filter(k=>ps.has(k))},
+  {title:'nvme temps',    pick:ps=>[...ps].filter(k=>/^nvme[0-9]+$/.test(k)).sort(natSort)},
+  {title:'disk temps',    pick:ps=>[...ps].filter(k=>/^sd[a-z]+$/.test(k)).sort(natSort)}
 ];
 const GAP=10;   // break line if sample gap > GAP s
-let DATA=null, hidden=new Set(), winMin=15;
+let DATA=null, HW=null, HW_T=0, hwTabOn=false, hidden=new Set(), winMin=15, PANELS=[], sig='';
 const fmtT=t=>new Date(t*1000).toLocaleTimeString([],{hour12:false});
 const statusEl=document.getElementById('status');
 
-// ---------- build panels ----------
-const PANELS=[];
+// ---------- panels (rebuilt only when the set of present series changes) ----------
 const panelsEl=document.getElementById('panels');
-for(const g of GROUPS){
+function buildPanel(g){
   const sec=document.createElement('section');
   sec.className='panel';
   sec.innerHTML='<div class="panel-head"><h2>'+g.title+'</h2><div class="chips"></div></div>'+
@@ -177,11 +209,11 @@ for(const g of GROUPS){
            right:new Set(g.right||[]),
            cv, ctx:cv.getContext('2d'), wrap:sec.querySelector('.chartwrap'),
            tip:sec.querySelector('.tip'), chips:sec.querySelector('.chips'),
-           hoverT:null, chipEls:{}};
+           hoverT:null, _R:14, chipEls:{}};
   for(const k of p.keys){
     const el=document.createElement('button');
     el.className='chip';
-    el.innerHTML='<span class="dot" style="background:'+COLORS[k]+'"></span>'+k+'<b></b>';
+    el.innerHTML='<span class="dot" style="background:'+colorFor(k)+'"></span>'+k+'<b></b>';
     el.onclick=()=>{ hidden.has(k)?hidden.delete(k):hidden.add(k);
       el.classList.toggle('off'); drawPanel(p); };
     p.chips.appendChild(el);
@@ -189,13 +221,21 @@ for(const g of GROUPS){
   }
   p.cv.addEventListener('mousemove',e=>{
     const WD=windowData(); if(!WD) return;
-    const r=p.cv.getBoundingClientRect(), L=46,R=14, pw=r.width-L-R;
+    const r=p.cv.getBoundingClientRect(), L=46, pw=r.width-L-p._R;
     const t=WD.x0+(e.clientX-r.left-L)/pw*(WD.x1-WD.x0);
     p.hoverT=Math.max(WD.x0,Math.min(WD.x1,t));
     drawPanel(p);
   });
   p.cv.addEventListener('mouseleave',()=>{ p.hoverT=null; drawPanel(p); });
-  PANELS.push(p);
+  return p;
+}
+function syncPanels(present){
+  const groups=GROUP_DEFS
+    .map(g=>({title:g.title,unit:g.unit,trip:g.trip,right:g.right,keys:g.pick(present)}))
+    .filter(g=>g.keys.length);
+  const s=groups.map(g=>g.title+':'+g.keys.join(',')).join('|');
+  if(s===sig) return;
+  sig=s; panelsEl.innerHTML=''; PANELS=groups.map(buildPanel);
 }
 
 // ---------- data ----------
@@ -204,11 +244,15 @@ async function poll(){
     const r=await fetch('/api/data',{cache:'no-store'});
     DATA=await r.json();
   }catch(e){ statusEl.className='status bad'; statusEl.textContent='connection lost: '+e; return; }
-  if(!DATA.ok){ statusEl.className='status bad'; statusEl.textContent=DATA.error||'no data yet'; renderChips(); return; }
+  if(!DATA.ok){ statusEl.className='status bad'; statusEl.textContent=DATA.error||'no data yet';
+    if(sig!==''){ sig=''; panelsEl.innerHTML=''; PANELS=[]; }
+    renderChips(); return; }
   const gap=DATA.now-DATA.t1;
   if(gap>15){ statusEl.className='status bad'; statusEl.textContent='⚠ no samples for '+gap+'s — daemon dead or host rebooted?'; }
   else{ statusEl.className='status ok';
     statusEl.textContent='live · last sample '+fmtT(DATA.t1); }
+  syncPanels(new Set(Object.keys(DATA.series)));
+  if(hwTabOn) loadHardware(false);
   renderChips(); drawAll();
 }
 setInterval(poll,3000); poll();
@@ -282,6 +326,7 @@ function drawPanel(p){
   const [y0L,y1L]=scale('L');
   const [y0R,y1R]=hasR?scale('R'):[y0L,y1L];
   const L=46,R=hasR?46:14,T=12,B=24, pw=W-L-R, ph=H-T-B;
+  p._R=R;
   const X=t=>L+(t-WD.x0)/(WD.x1-WD.x0)*pw;
   const YL=v=>T+ph-(v-y0L)/(y1L-y0L)*ph;
   const YR=v=>T+ph-(v-y0R)/(y1R-y0R)*ph;
@@ -323,7 +368,7 @@ function drawPanel(p){
   for(const k of p.keys){
     if(hidden.has(k)) continue;
     const a=pts[k]; if(!a||!a.length) continue;
-    ctx.strokeStyle=COLORS[k]; ctx.lineWidth=1.8; ctx.lineJoin='round';
+    ctx.strokeStyle=colorFor(k); ctx.lineWidth=1.8; ctx.lineJoin='round';
     ctx.beginPath();
     let pen=false, prev=null;
     for(const [t,v] of a){
@@ -332,7 +377,7 @@ function drawPanel(p){
       prev=t;
     }
     ctx.stroke();
-    if(a.length===1){ ctx.fillStyle=COLORS[k];
+    if(a.length===1){ ctx.fillStyle=colorFor(k);
       ctx.beginPath(); ctx.arc(X(a[0][0]),Y(k,a[0][1]),2.5,0,7); ctx.fill(); }
   }
   if(p.hoverT!==null&&p.hoverT>=WD.x0&&p.hoverT<=WD.x1){
@@ -360,9 +405,51 @@ function drawPanel(p){
 
 function drawAll(){ for(const p of PANELS) drawPanel(p); }
 
-document.querySelectorAll('.winbtns button').forEach(b=>b.onclick=()=>{
+// ---------- hardware tab (knob -> device identity) ----------
+const hwBody=document.getElementById('hw-body');
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function loadHardware(force){
+  if(!force&&HW&&Date.now()-HW_T<60000) return;
+  try{
+    const r=await fetch('/api/hardware',{cache:'no-store'});
+    const j=await r.json();
+    if(j.ok){ HW=j.hardware; HW_T=Date.now(); }
+  }catch(e){}
+  renderHardware();
+}
+// dot color = the line color of the matching live series (nvme0n1 disk row
+// matches the nvme0 temp line)
+function knobColor(k){ const m=k.match(/^nvme([0-9]+)n\d*$/); return colorFor(m?'nvme'+m[1]:k); }
+function renderHardware(){
+  if(!HW){ hwBody.innerHTML='<p class="muted">No hardware inventory yet — the daemon writes it at startup.</p>'; return; }
+  const zone=HW.power_zone==='none'?'<span class="muted">no RAPL zone (cpu.W unavailable)</span>':esc(HW.power_zone);
+  const sens=HW.cpu_sensor==='none'?'<span class="muted">none found</span>':esc(HW.cpu_sensor);
+  let h='<div class="hwinfo">host <b>'+esc(HW.host)+'</b> · '+(HW.cpu?esc(HW.cpu):'cpu unknown')
+    +' · temp sensor '+sens+' · cpu power '+zone+'</div>';
+  h+='<table><tr><th>knob</th><th>hardware</th></tr>';
+  h+='<tr><td class="knob"><span class="dot" style="background:'+colorFor('cpu.Tdie')+'"></span>cpu.Tctl / cpu.Tdie</td><td>'+(HW.cpu?esc(HW.cpu):'<span class="muted">unknown</span>')+'</td></tr>';
+  h+='<tr><td class="knob"><span class="dot" style="background:'+colorFor('cpu.W')+'"></span>cpu.W</td><td>powercap RAPL '+zone+'</td></tr>';
+  for(const g of (HW.gpus||[]))
+    h+='<tr><td class="knob"><span class="dot" style="background:'+knobColor(g.knob)+'"></span>'+esc(g.knob)+'</td><td>'+esc(g.name)+'</td></tr>';
+  h+='</table>';
+  h+='<table><tr><th>knob</th><th>vendor</th><th>model</th><th>serial</th><th>size</th></tr>';
+  for(const d of (HW.disks||[]))
+    h+='<tr><td class="knob"><span class="dot" style="background:'+knobColor(d.name)+'"></span>'+esc(d.name)+'</td><td>'+esc(d.vendor)+'</td><td>'+esc(d.model)+'</td><td class="mono">'+esc(d.serial)+'</td><td>'+esc(d.size)+'</td></tr>';
+  h+='</table>';
+  hwBody.innerHTML=h;
+}
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===b));
+  hwTabOn=b.dataset.tab==='hw';
+  document.getElementById('panels').style.display=hwTabOn?'none':'';
+  document.getElementById('hwtab').style.display=hwTabOn?'':'none';
+  if(hwTabOn) loadHardware(true);
+});
+loadHardware(false);
+
+document.querySelectorAll('.winbtns button[data-w]').forEach(b=>b.onclick=()=>{
   winMin=+b.dataset.w;
-  document.querySelectorAll('.winbtns button').forEach(x=>x.classList.toggle('on',x===b));
+  document.querySelectorAll('.winbtns button[data-w]').forEach(x=>x.classList.toggle('on',x===b));
   drawAll();
 });
 window.addEventListener('resize',drawAll);
@@ -389,6 +476,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/api/data":
             self._send(200, "application/json", json.dumps(api_payload()).encode())
+        elif self.path == "/api/hardware":
+            self._send(200, "application/json", json.dumps(hw_payload()).encode())
         elif self.path in ("/", "/index.html"):
             self._send(200, "text/html; charset=utf-8", PAGE.encode())
         else:

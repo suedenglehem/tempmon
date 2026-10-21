@@ -6,8 +6,14 @@
 #
 #   --lan IP   open the dashboard port to IP via ufw (repeatable). Applied only
 #              when ufw is active; without --lan the command to run is printed.
-#   --trip C   CPU trip temperature for the dashboard's dashed line (default
-#              95 for the AMD 1950X; e.g. 100 for an Intel i7-14700K).
+#   --trip C   CPU trip temperature for the dashboard's dashed line. Without
+#              it the value is auto-detected from the CPU hwmon driver:
+#              k10temp (AMD) -> 95, coretemp (Intel) -> 100.
+#
+# Everything else auto-configures from hardware at runtime: the daemon picks
+# up every real SATA disk (0B phantom entries skipped), all NVMe drives, all
+# GPUs and the RAPL power zone, and writes a knob->device identity inventory
+# that the dashboard shows in its "hardware" tab.
 #
 # Installs:
 #   - smartmontools (smartctl) — disk temp retrieval (SATA disks; NVMe temps
@@ -29,6 +35,7 @@ WEB_PORT=9066
 
 LAN_IPS=""
 TRIP_C=95
+TRIP_SET=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --lan)
@@ -36,7 +43,7 @@ while [ $# -gt 0 ]; do
             LAN_IPS="$LAN_IPS $2"; shift ;;
         --trip)
             [ $# -ge 2 ] || { echo "--trip needs a value" >&2; exit 1; }
-            TRIP_C="$2"; shift ;;
+            TRIP_C="$2"; TRIP_SET=1; shift ;;
         *)
             echo "unknown argument: $1" >&2; exit 1 ;;
     esac
@@ -64,6 +71,16 @@ echo "smartctl: $(command -v smartctl)"
 # tolerates absence (cpu fields = NA)
 if [ -d /sys/class/hwmon ] && ! grep -qsE '^(k10temp|coretemp)$' /sys/class/hwmon/*/name 2>/dev/null; then
     modprobe k10temp 2>/dev/null || modprobe coretemp 2>/dev/null || true
+fi
+
+# cpu trip temperature: auto-detected from the CPU hwmon driver
+# (k10temp/AMD -> 95, coretemp/Intel -> 100); an explicit --trip wins
+if [ "$TRIP_SET" = 0 ]; then
+    if grep -qs '^k10temp$' /sys/class/hwmon/*/name 2>/dev/null; then TRIP_C=95
+    elif grep -qs '^coretemp$' /sys/class/hwmon/*/name 2>/dev/null; then TRIP_C=100; fi
+    echo "cpu trip: ${TRIP_C} C (auto-detected from the cpu hwmon driver; override with --trip)"
+else
+    echo "cpu trip: ${TRIP_C} C (--trip)"
 fi
 
 # ---- 2. files ---------------------------------------------------------------

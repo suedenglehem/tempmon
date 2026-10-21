@@ -11,38 +11,56 @@ names itself `thermal-<hostname>` (real hostname, not hardcoded).
   (powercap RAPL "package-*" zone, energy_uj delta between samples → cpu.W;
   works on AMD too — the kernel exposes intel-rapl:0 named package-0),
   gpu (nvidia-smi temps per GPU + power.draw summed over all GPUs → gpu.W),
-  all SATA disks (smartctl, needs root), nvme (sysfs hwmon) every 3 s →
-  /var/log/thermal.log; self-rotates ×2 (last 15 min); start/stop/rotate
-  markers (start marker lists sources incl. the powercap zone).
-  Test hooks: THERMAL_LOG / THERMAL_INTERVAL / THERMAL_ROTATE_EVERY.
+  every real SATA disk from lsblk (0B phantom entries like empty USB
+  card-reader slots are skipped; smartctl, needs root), nvme (sysfs hwmon)
+  every 3 s → /var/log/thermal.log; fields are dynamic — one per detected
+  GPU / disk / NVMe, only sources present on the host. At startup it also
+  writes the knob->device hardware inventory (THERMAL_HW_FILE, default
+  /var/lib/thermal/hardware.json) for the web "hardware" tab. Self-rotates
+  ×2 (last 15 min); start/stop/rotate markers (start marker lists sources
+  incl. the powercap zone).
+  Test hooks: THERMAL_LOG / THERMAL_HW_FILE / THERMAL_INTERVAL / THERMAL_ROTATE_EVERY.
 - `thermal-daemon.service` — systemd unit (Restart=always, runs as root for smartctl).
 - `thermal-graph` — stdlib-only Python (ThreadingHTTPServer), zero CDN;
-  `/` dashboard (6 stacked canvas panels: cpu temps / cpu power / gpu power
-  (total) / nvme / other disk / gpu temps; per-panel units — W on the power
-  panels, ° on the temp ones) + `/api/data` JSON. Env: THERMAL_WEB_HOST
-  (0.0.0.0), THERMAL_WEB_PORT (9066), THERMAL_WEB_TRIP_C (cpu trip line, 95).
+  `/` dashboard with a "live" tab (stacked canvas panels: cpu+gpu power
+  (dual-axis: gpu.W left, cpu.W right) / gpu temps / cpu temps (trip line)
+  / nvme temps / disk temps — W on the power panel, ° on the temp ones)
+  and a "hardware" tab (tables mapping every knob to the device behind it:
+  gpu0 = "NVIDIA GeForce RTX 3090", sda = vendor/model/serial/size, cpu and
+  cpu.W sources), built from whatever the daemon actually logs — a source
+  this host doesn't have (no NVMe, 2 GPUs instead of 3, disks named beyond
+  sdf) simply has no chips and no panel. + `/api/data` + `/api/hardware`
+  JSON. Env: THERMAL_WEB_HOST (0.0.0.0), THERMAL_WEB_PORT (9066),
+  THERMAL_WEB_TRIP_C (cpu trip line), THERMAL_HW_FILE.
 - `thermal-graph.service` — systemd unit (Restart=always, enabled).
 - `thermal.txt` — post-mortem inspection notes (what to look for after a death).
 - `install.sh` — one-shot installer (Debian/Ubuntu, root): installs
   **smartmontools** (disk temp retrieval), the two programs and their units,
-  enables + starts both services, optionally opens the port via ufw, and
-  prints the first samples.
+  enables + restarts both services, optionally opens the port via ufw, and
+  prints the first samples. Everything auto-configures from hardware:
+  disks / GPUs / NVMe / RAPL zone are detected at daemon start, and the CPU
+  trip temperature is auto-detected from the CPU hwmon driver (k10temp/AMD
+  → 95, coretemp/Intel → 100) unless --trip is given.
 
 ## Deployed copies
 - b760one (192.168.0.30) — live at /usr/local/sbin/{thermal-daemon,thermal-graph}
-  + /etc/systemd/system/*.service; restarted 2026-10-21 with the hostname +
-  power changes, verified (15 API series incl. cpu.W/gpu.W, page 200).
-- i7 (192.168.0.33) — live, current (redeployed 2026-10-21 via
-  `install.sh --trip 100`): dynamic title `thermal-i7`, all 5 panels
-  incl. cpu.W (14700K RAPL package-0) + gpu.W (2 GPUs summed), trip 100.
+  + /etc/systemd/system/*.service; reinstalled 2026-10-21 with the generic
+  + hardware-tab build, verified (15 API series, /api/hardware with 3 GPUs
+  + 8 disks, page 200).
+- i7 (192.168.0.33) — live, current (reinstalled 2026-10-21; install.sh
+  auto-detected trip 100 from coretemp): dynamic title `thermal-i7`,
+  12 SATA disks (6 zero-size USB card-reader phantoms skipped), 2 GPUs
+  (gpu0 = RTX 4080 SUPER, gpu1 = RTX 4060 Ti — no gpu2 chip), no NVMe so
+  the nvme panel is absent entirely, trip 100, /api/hardware lists all
+  12 disks with vendor/model/serial.
 
 ## Install on a fresh box
 ```
 sudo sh install.sh [--trip C] --lan <viewer-ip> [--lan <viewer-ip> ...]
 ```
-- `--trip C` — CPU trip temperature for the dashed line on the cpu panel
-  (default 95 = AMD 1950X; 100 for Intel i7-14700K). Written into the graph
-  unit as THERMAL_WEB_TRIP_C.
+- `--trip C` — CPU trip temperature for the dashed line on the cpu panel.
+  Without it: auto-detected from the CPU hwmon driver (k10temp/AMD → 95,
+  coretemp/Intel → 100). Written into the graph unit as THERMAL_WEB_TRIP_C.
 - `--lan IP` (repeatable) — source-restricted ufw rule for the dashboard port;
   only applied when ufw is active (with inactive ufw the port is simply open).
   Without any --lan the script prints the ufw command to run.

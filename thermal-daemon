@@ -2,7 +2,12 @@
 # thermal-daemon — continuous temperature logger for sudden-shutdown forensics.
 #
 # Logs one line per sample (default every 3 s) to /var/log/thermal.log:
-#   <hh:mm:ss dd/mm/yyyy> cpu.Tctl=.. cpu.Tdie=.. cpu.W=.. gpu0=.. gpu1=.. gpu2=.. gpu.W=.. sda=.. sdb=.. sdc=.. sdd=.. sde=.. sdf=.. nvme0=.. nvme1=..
+#   <hh:mm:ss dd/mm/yyyy> cpu.Tctl=.. cpu.Tdie=.. cpu.W=.. gpu0=.. gpu.W=.. sda=.. nvme0=..
+# Fields are dynamic: one per detected GPU / SATA disk / NVMe — only sources
+# actually present on the host appear. At startup the daemon also writes the
+# knob->device hardware inventory (THERMAL_HW_FILE, default
+# /var/lib/thermal/hardware.json) that the web dashboard's "hardware" tab
+# renders (gpu0 = "NVIDIA GeForce RTX 3090", sda = vendor/model/serial, ...).
 # Sources:
 #   cpu   : AMD k10temp (temp1=Tctl temp2=Tdie) or Intel coretemp (temp1=
 #           Package temp2=core0) sysfs — fields stay cpu.Tctl/cpu.Tdie on
@@ -12,10 +17,12 @@
 #           — zone picked by name "package-*"; on AMD the kernel exposes
 #           intel-rapl:0 named package-0, so it works there too
 #   gpu.W : nvidia-smi power.draw, summed over all GPUs (W)
-#   sda.. : smartctl (smartmontools) — attr 194 "Temperature_Celsius"
-#           (SSDs / most HDDs) or the "Current Drive Temperature" section
-#           (some Samsung / older drives). Needs root to open /dev/sdX —
-#           the systemd service runs as root.
+#   sd*   : every real SATA disk from lsblk (0B entries like empty USB
+#           card-reader slots are skipped), via smartctl (smartmontools) —
+#           attr 194 "Temperature_Celsius" (SSDs / most HDDs) or the
+#           "Current Drive Temperature" section (some Samsung / older
+#           drives). Needs root to open /dev/sdX — the systemd service
+#           runs as root.
 #   nvme  : sysfs nvme hwmon, Composite sensor (millidegrees)
 # A source that is momentarily unavailable shows as NA; the daemon never dies.
 # Marker lines record daemon start/stop and each rotation, so boot
@@ -28,11 +35,13 @@
 # A log file already stale on startup (survived a crash/reboot) is rotated
 # away before the first sample.
 #
-# Env overrides (testing): THERMAL_LOG, THERMAL_INTERVAL, THERMAL_ROTATE_EVERY.
+# Env overrides (testing): THERMAL_LOG, THERMAL_HW_FILE, THERMAL_INTERVAL,
+# THERMAL_ROTATE_EVERY.
 
 set -u
 
 LOG=${THERMAL_LOG:-/var/log/thermal.log}
+HW_FILE=${THERMAL_HW_FILE:-/var/lib/thermal/hardware.json}
 INTERVAL=${THERMAL_INTERVAL:-3}
 ROTATE_EVERY=${THERMAL_ROTATE_EVERY:-100}
 
@@ -69,7 +78,9 @@ done
 
 SATA_DISKS=""
 if command -v lsblk >/dev/null 2>&1; then
-    SATA_DISKS=$(lsblk -dno NAME,TYPE 2>/dev/null | awk '$2=="disk" && $1 ~ /^sd./ {print $1}' | sort)
+    # only real disks: skip 0B entries (empty USB card-reader slots etc.)
+    SATA_DISKS=$(lsblk -dno NAME,SIZE,TYPE 2>/dev/null \
+        | awk '$3=="disk" && $1 ~ /^sd./ && $2 != "0B" {print $1}' | sort)
 fi
 
 HAVE_GPU=0
@@ -97,6 +108,56 @@ done
 done
 _prev_energy=""
 _prev_pt=""
+
+# ---------- hardware inventory (web "hardware" tab) ---------------------------
+# knob -> device identity, written once at startup as JSON (daemon runs as
+# root, so lsblk/nvidia-smi see the real ids). thermal-graph serves the file
+# read-only at /api/hardware. A disk hot-plugged while running appears after
+# a daemon restart.
+write_hw_inventory() {
+    _h="$1"
+    _dir=$(dirname "$_h")
+    [ -d "$_dir" ] || mkdir -p "$_dir" 2>/dev/null
+    {
+        printf '{\n'
+        printf ' "host": "%s",\n' "$(hostname 2>/dev/null || uname -n)"
+        printf ' "updated": %s,\n' "$(date +%s)"
+        printf ' "cpu": "%s",\n' "$(awk -F: '/^model name/ {v=$2; sub(/^[ \t]+/, "", v); print v; exit}' /proc/cpuinfo 2>/dev/null)"
+        printf ' "cpu_sensor": "%s",\n' "$([ -n "$CPU_HWMON" ] && cat "$CPU_HWMON/name" 2>/dev/null || echo none)"
+        printf ' "power_zone": "%s",\n' "$([ -n "$POWERCAP_ENERGY" ] && basename "$(dirname "$POWERCAP_ENERGY")" || echo none)"
+        printf ' "gpus": ['
+        if [ "$HAVE_GPU" = 1 ]; then
+            _gi=0
+            timeout 5 nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null |
+            while IFS= read -r _gn; do
+                [ -n "$_gn" ] || continue
+                [ "$_gi" -gt 0 ] && printf ', '
+                printf '{"knob": "gpu%d", "name": "%s"}' "$_gi" "$_gn"
+                _gi=$((_gi + 1))
+            done
+        fi
+        printf '],\n'
+        printf ' "disks": ['
+        command -v lsblk >/dev/null 2>&1 && lsblk -dnP -o NAME,VENDOR,MODEL,SERIAL,SIZE,TYPE 2>/dev/null | awk '
+            function jesc(s) { gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); return s }
+            function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+            {
+                line = " " $0; split("", kv)
+                while (match(line, / [A-Z]+="[^"]*"/)) {
+                    tok = substr(line, RSTART + 1, RLENGTH - 1)
+                    line = substr(line, RSTART + RLENGTH)
+                    eq = index(tok, "=")
+                    v = substr(tok, eq + 2); sub(/"$/, "", v)
+                    kv[substr(tok, 1, eq - 1)] = v
+                }
+                if (kv["TYPE"] == "disk" && kv["SIZE"] != "0B")
+                    printf "%s{\"name\": \"%s\", \"vendor\": \"%s\", \"model\": \"%s\", \"serial\": \"%s\", \"size\": \"%s\"}", \
+                        (n++ ? ", " : ""), jesc(kv["NAME"]), jesc(trim(kv["VENDOR"])), \
+                        jesc(trim(kv["MODEL"])), jesc(trim(kv["SERIAL"])), jesc(trim(kv["SIZE"]))
+            }'
+        printf ']\n}\n'
+    } >"$_h.tmp" 2>/dev/null && mv -f "$_h.tmp" "$_h"
+}
 
 # ---------- logging / rotation ----------
 rotate() {
@@ -215,11 +276,13 @@ fi
 _ngpu=$( [ "$HAVE_GPU" = 1 ] && timeout 5 nvidia-smi -L 2>/dev/null | wc -l || echo 0 )
 _nsata=$( [ -n "$SATA_DISKS" ] && [ "$HAVE_SMART" = 1 ] && echo "$SATA_DISKS" | wc -w || echo 0 )
 _nvme=$(echo $NVME_HWMONS | wc -w | awk '{print int($1/2)}')
-printf '%s -- daemon start: pid=%s interval=%ss rotate_every=%s cpu=%s powercap=%s gpu=nvidia-smi(%s) nvme=hwmon(%s) sata=smartctl(%s) --\n' \
+printf '%s -- daemon start: pid=%s interval=%ss rotate_every=%s cpu=%s powercap=%s gpu=nvidia-smi(%s) nvme=hwmon(%s) sata=smartctl(%s) hw=%s --\n' \
     "$(ts)" "$$" "$INTERVAL" "$ROTATE_EVERY" \
     "$( [ -n "$CPU_HWMON" ] && basename "$CPU_HWMON" || echo none )" \
     "$( [ -n "$POWERCAP_ENERGY" ] && basename "$(dirname "$POWERCAP_ENERGY")" || echo none )" \
-    "$_ngpu" "$_nvme" "$_nsata" >&9
+    "$_ngpu" "$_nvme" "$_nsata" "$HW_FILE" >&9
+
+write_hw_inventory "$HW_FILE"
 
 trap 'printf "%s -- daemon stop (signal) --\n" "$(ts)" >&9 2>/dev/null; exec 9>&-; exit 0' TERM INT
 
