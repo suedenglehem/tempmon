@@ -15,8 +15,12 @@
 #   - /usr/local/sbin/thermal-daemon + /etc/systemd/system/thermal-daemon.service
 #   - /usr/local/sbin/thermal-graph  + /etc/systemd/system/thermal-graph.service
 # Enables and starts both services, then shows the first samples.
-# GPU temps need the NVIDIA driver (nvidia-smi); without it the gpu fields
-# read NA and everything else works.
+# GPU temps/power need the NVIDIA driver (nvidia-smi); without it the gpu
+# fields read NA and everything else works.
+# CPU power (cpu.W) comes from the powercap RAPL "package-*" zone — modern
+# Intel, and AMD too (the kernel exposes intel-rapl:0 named package-0 on the
+# 1950X); no extra package. If the zone is absent the field is omitted and a
+# note is printed at the end.
 
 set -eu
 
@@ -102,5 +106,12 @@ sleep 4   # let a couple of 3s samples land
 echo
 echo "--- last thermal samples ---"
 tail -n 3 /var/log/thermal.log
+echo
+if tail -n 10 /var/log/thermal.log | grep -q ' cpu.W='; then
+    echo "power: cpu.W (powercap) and gpu.W (nvidia-smi) present"
+else
+    echo "NOTE: no cpu.W in the samples — no powercap RAPL package zone"
+    echo "      found, so CPU power is omitted (everything else is fine)"
+fi
 echo
 echo "tempmon installed and running. Dashboard: http://<this-host-ip>:$WEB_PORT"

@@ -2,12 +2,16 @@
 # thermal-daemon — continuous temperature logger for sudden-shutdown forensics.
 #
 # Logs one line per sample (default every 3 s) to /var/log/thermal.log:
-#   <hh:mm:ss dd/mm/yyyy> cpu.Tctl=.. cpu.Tdie=.. gpu0=.. gpu1=.. gpu2=.. sda=.. sdb=.. sdc=.. sdd=.. sde=.. sdf=.. nvme0=.. nvme1=..
+#   <hh:mm:ss dd/mm/yyyy> cpu.Tctl=.. cpu.Tdie=.. cpu.W=.. gpu0=.. gpu1=.. gpu2=.. gpu.W=.. sda=.. sdb=.. sdc=.. sdd=.. sde=.. sdf=.. nvme0=.. nvme1=..
 # Sources:
 #   cpu   : AMD k10temp (temp1=Tctl temp2=Tdie) or Intel coretemp (temp1=
 #           Package temp2=core0) sysfs — fields stay cpu.Tctl/cpu.Tdie on
 #           both; the trip temp is per-CPU (1950X: Tdie 95C, i7-14700K: 100C)
 #   gpu   : nvidia-smi (temperature.gpu)
+#   cpu.W : powercap RAPL package zone, energy_uj delta between samples (W)
+#           — zone picked by name "package-*"; on AMD the kernel exposes
+#           intel-rapl:0 named package-0, so it works there too
+#   gpu.W : nvidia-smi power.draw, summed over all GPUs (W)
 #   sda.. : smartctl (smartmontools) — attr 194 "Temperature_Celsius"
 #           (SSDs / most HDDs) or the "Current Drive Temperature" section
 #           (some Samsung / older drives). Needs root to open /dev/sdX —
@@ -73,6 +77,27 @@ command -v nvidia-smi >/dev/null 2>&1 && HAVE_GPU=1
 HAVE_SMART=0
 command -v smartctl >/dev/null 2>&1 && HAVE_SMART=1
 
+# CPU package power: the powercap zone named "package-*" (RAPL). energy_uj
+# is a monotonic uJ counter — power = delta between two consecutive samples.
+# Fallback: first top-level (single-colon) zone with an energy_uj.
+POWERCAP_ENERGY=""
+for _z in /sys/class/powercap/*/; do
+    _z=${_z%/}
+    [ -r "$_z/energy_uj" ] || continue
+    case "$(cat "$_z/name" 2>/dev/null)" in
+        package*) POWERCAP_ENERGY=$_z/energy_uj; break ;;
+    esac
+done
+[ -n "$POWERCAP_ENERGY" ] || for _z in /sys/class/powercap/*/energy_uj; do
+    case "${_z#/sys/class/powercap/}" in
+        *:*:*) continue ;;
+    esac
+    POWERCAP_ENERGY=$_z
+    break
+done
+_prev_energy=""
+_prev_pt=""
+
 # ---------- logging / rotation ----------
 rotate() {
     exec 9>&-
@@ -100,6 +125,21 @@ sample() {
         line="$line cpu.Tctl=NA cpu.Tdie=NA"
     fi
 
+    if [ -n "$POWERCAP_ENERGY" ]; then
+        _p=$(cat "$POWERCAP_ENERGY" 2>/dev/null) || _p=""
+        _pt=$(date +%s.%N)
+        if [ -n "$_p" ] && [ -n "$_prev_energy" ]; then
+            _w=$(awk -v e="$_p" -v e0="$_prev_energy" -v t="$_pt" -v t0="$_prev_pt" \
+                'BEGIN { dt = t - t0; de = e - e0
+                          if (dt > 0 && de >= 0) printf "%.1f", de / dt / 1e6
+                          else print "NA" }')
+        else
+            _w=NA
+        fi
+        [ -n "$_p" ] && { _prev_energy=$_p; _prev_pt=$_pt; }
+        line="$line cpu.W=$_w"
+    fi
+
     if [ "$HAVE_GPU" = 1 ]; then
         _n=0
         for _g in $(timeout 5 nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits 2>/dev/null); do
@@ -107,6 +147,9 @@ sample() {
             _n=$((_n + 1))
         done
         [ "$_n" = 0 ] && line="$line gpu=NA"
+        _gw=$(timeout 5 nvidia-smi --query-gpu=power.draw --format=csv,noheader,nounits 2>/dev/null \
+            | awk 'NF { s += $1; c++ } END { if (c > 0) printf "%.1f", s; else print "NA" }')
+        line="$line gpu.W=$_gw"
     fi
 
     if [ -n "$SATA_DISKS" ] && [ "$HAVE_SMART" = 1 ]; then
@@ -172,9 +215,10 @@ fi
 _ngpu=$( [ "$HAVE_GPU" = 1 ] && timeout 5 nvidia-smi -L 2>/dev/null | wc -l || echo 0 )
 _nsata=$( [ -n "$SATA_DISKS" ] && [ "$HAVE_SMART" = 1 ] && echo "$SATA_DISKS" | wc -w || echo 0 )
 _nvme=$(echo $NVME_HWMONS | wc -w | awk '{print int($1/2)}')
-printf '%s -- daemon start: pid=%s interval=%ss rotate_every=%s cpu=%s gpu=nvidia-smi(%s) nvme=hwmon(%s) sata=smartctl(%s) --\n' \
+printf '%s -- daemon start: pid=%s interval=%ss rotate_every=%s cpu=%s powercap=%s gpu=nvidia-smi(%s) nvme=hwmon(%s) sata=smartctl(%s) --\n' \
     "$(ts)" "$$" "$INTERVAL" "$ROTATE_EVERY" \
     "$( [ -n "$CPU_HWMON" ] && basename "$CPU_HWMON" || echo none )" \
+    "$( [ -n "$POWERCAP_ENERGY" ] && basename "$(dirname "$POWERCAP_ENERGY")" || echo none )" \
     "$_ngpu" "$_nvme" "$_nsata" >&9
 
 trap 'printf "%s -- daemon stop (signal) --\n" "$(ts)" >&9 2>/dev/null; exec 9>&-; exit 0' TERM INT

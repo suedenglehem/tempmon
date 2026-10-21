@@ -15,6 +15,7 @@ Routes:
 import json
 import os
 import re
+import socket
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HOST = os.environ.get("THERMAL_WEB_HOST", "0.0.0.0")
 PORT = int(os.environ.get("THERMAL_WEB_PORT", "9066"))
 TRIP_C = os.environ.get("THERMAL_WEB_TRIP_C", "95")
+HOSTNAME = socket.gethostname()
 LOGDIR = os.environ.get("THERMAL_LOG_DIR", "/var/log")
 LOGS = ("thermal.log", "thermal.log.1", "thermal.log.2")
 MAX_AGE = 20 * 60  # ignore lines older than this (defensive; logs hold 15 min)
@@ -29,7 +31,7 @@ MAX_AGE = 20 * 60  # ignore lines older than this (defensive; logs hold 15 min)
 RE_NEW = re.compile(r"^(\d{2}):(\d{2}):(\d{2}) (\d{2})/(\d{2})/(\d{4}) (.*)$")
 RE_ISO = re.compile(r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})")
 RE_KV = re.compile(r"([A-Za-z][A-Za-z0-9_.]*)=([0-9]+(?:\.[0-9]+)?|NA)\b")
-RE_KEY = re.compile(r"^(cpu\.|gpu\d|sd[a-z]|nvme\d)")
+RE_KEY = re.compile(r"^(cpu\.|gpu[0-9.W]|sd[a-z]|nvme\d)")
 
 
 def line_epoch(line):
@@ -103,7 +105,7 @@ PAGE = r"""<!doctype html>
 <html><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>b760one thermal</title>
+<title>thermal-__HOST__</title>
 <style>
 :root{color-scheme:dark}
 *{box-sizing:border-box}
@@ -132,7 +134,7 @@ h1{font-size:18px;margin:0;font-weight:650}
 </style></head>
 <body>
 <header>
-  <h1>thermal — b760one</h1>
+  <h1>thermal — __HOST__</h1>
   <div class="status" id="status">connecting…</div>
   <div class="winbtns">
     <button data-w="5">5m</button>
@@ -145,14 +147,17 @@ h1{font-size:18px;margin:0;font-weight:650}
 const COLORS={
   'cpu.Tctl':'#ff8c42','cpu.Tdie':'#ff3b30',
   'gpu0':'#4cc9f0','gpu1':'#4895ef','gpu2':'#7b8cff',
+  'cpu.W':'#ffd60a','gpu.W':'#f06595',
   'sda':'#b5e48c','sdb':'#7cb518','sdc':'#90be6d','sdd':'#f9c74f','sde':'#a3b18a','sdf':'#d9d2c5',
   'nvme0':'#c77dff','nvme1':'#9d4edd'
 };
 const GROUPS=[
-  {title:'cpu temps',        keys:['cpu.Tctl','cpu.Tdie'], trip:__TRIP__},
-  {title:'nvme temps',       keys:['nvme0','nvme1']},
-  {title:'other disk temps', keys:['sda','sdb','sdc','sdd','sde','sdf']},
-  {title:'gpu temps',        keys:['gpu0','gpu1','gpu2']}
+  {title:'cpu temps',         keys:['cpu.Tctl','cpu.Tdie'], trip:__TRIP__},
+  {title:'cpu power',         keys:['cpu.W'], unit:'W'},
+  {title:'gpu power (total)', keys:['gpu.W'], unit:'W'},
+  {title:'nvme temps',        keys:['nvme0','nvme1']},
+  {title:'other disk temps',  keys:['sda','sdb','sdc','sdd','sde','sdf']},
+  {title:'gpu temps',         keys:['gpu0','gpu1','gpu2']}
 ];
 const GAP=10;   // break line if sample gap > GAP s
 let DATA=null, hidden=new Set(), winMin=15;
@@ -169,7 +174,7 @@ for(const g of GROUPS){
     '<div class="chartwrap"><canvas class="chart"></canvas><div class="tip"></div></div>';
   panelsEl.appendChild(sec);
   const cv=sec.querySelector('canvas');
-  const p={title:g.title, keys:g.keys, trip:g.trip,
+  const p={title:g.title, keys:g.keys, trip:g.trip, unit:g.unit||'°',
            cv, ctx:cv.getContext('2d'), wrap:sec.querySelector('.chartwrap'),
            tip:sec.querySelector('.tip'), chips:sec.querySelector('.chips'),
            hoverT:null, chipEls:{}};
@@ -275,7 +280,7 @@ function drawPanel(p){
     ctx.strokeStyle='rgba(255,255,255,.07)';
     ctx.beginPath(); ctx.moveTo(L,Y(v)); ctx.lineTo(W-R,Y(v)); ctx.stroke();
     ctx.fillStyle='rgba(255,255,255,.45)'; ctx.textAlign='right'; ctx.textBaseline='middle';
-    ctx.fillText(Math.round(v)+'°',L-6,Y(v));
+    ctx.fillText(Math.round(v)+p.unit,L-6,Y(v));
   }
   const span=WD.x1-WD.x0, units=[10,15,30,60,120,300];
   const step=units.find(u=>span/u<=8)||600;
@@ -289,7 +294,7 @@ function drawPanel(p){
     ctx.setLineDash([6,4]); ctx.strokeStyle='rgba(255,59,48,.8)'; ctx.lineWidth=1.2;
     ctx.beginPath(); ctx.moveTo(L,Y(p.trip)); ctx.lineTo(W-R,Y(p.trip)); ctx.stroke(); ctx.setLineDash([]);
     ctx.fillStyle='rgba(255,59,48,.9)'; ctx.textAlign='right'; ctx.textBaseline='bottom';
-    ctx.fillText('cpu trip '+p.trip+'°',W-R-4,Y(p.trip)-3);
+    ctx.fillText('cpu trip '+p.trip+p.unit,W-R-4,Y(p.trip)-3);
   }
   for(const [t,kind] of WD.events){
     ctx.setLineDash([4,4]);
@@ -327,7 +332,7 @@ function drawPanel(p){
     rows.sort((a,b)=>b[1]-a[1]);
     if(rows.length){
       p.tip.innerHTML='<div class="tt-t">'+fmtT(p.hoverT)+'</div>'+
-        rows.map(r=>'<div class="tt-r"><span class="dot" style="background:'+r[2]+'"></span>'+r[0]+'<b>'+r[1]+'°</b></div>').join('');
+        rows.map(r=>'<div class="tt-r"><span class="dot" style="background:'+r[2]+'"></span>'+r[0]+'<b>'+r[1]+p.unit+'</b></div>').join('');
       p.tip.style.display='block';
       const tx=p.cv.offsetLeft+X(p.hoverT);
       p.tip.style.left=(tx+14>W*0.72? tx-p.tip.offsetWidth-14 : tx+14)+'px';
@@ -347,7 +352,7 @@ window.addEventListener('resize',drawAll);
 </script>
 </body></html>
 """
-PAGE = PAGE.replace("__TRIP__", TRIP_C)
+PAGE = PAGE.replace("__TRIP__", TRIP_C).replace("__HOST__", HOSTNAME)
 
 
 class Handler(BaseHTTPRequestHandler):
