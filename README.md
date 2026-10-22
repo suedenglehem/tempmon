@@ -5,6 +5,14 @@ repeated hard-power-loss reboots — log all temps + power draw every 3 s so the
 last 15 min survive for post-mortem, and graph them on the LAN. The dashboard
 names itself `thermal-<hostname>` (real hostname, not hardcoded).
 
+## Screenshots
+
+Live tab:
+![live tab](screenshots/mon.png)
+
+Hardware tab:
+![hardware tab](screenshots/hw.png)
+
 ## Contents
 - `thermal-daemon` — POSIX sh logger: cpu (AMD k10temp / Intel coretemp —
   fields stay cpu.Tctl=package/control, cpu.Tdie=die/core0), cpu power
