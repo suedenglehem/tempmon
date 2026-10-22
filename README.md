@@ -1,6 +1,7 @@
 # tempmon — thermal monitor (daemon + web graph)
 
-Built 2026-10-21. Purpose: forensics for b760one/tr4 (192.168.0.30, AMD 1950X)
+my little thermal monitor of my llm's boxes. deploying graphana would
+be overkill.  initial purpose: forensics for b760one/tr4 (192.168.0.30, AMD 1950X)
 repeated hard-power-loss reboots — log all temps + power draw every 3 s so the
 last 15 min survive for post-mortem, and graph them on the LAN. The dashboard
 names itself `thermal-<hostname>` (real hostname, not hardcoded).
