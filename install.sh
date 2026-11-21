@@ -31,7 +31,7 @@
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-WEB_PORT=9066
+WEB_PORT=9096
 
 LAN_IPS=""
 TRIP_C=95

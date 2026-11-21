@@ -39,7 +39,7 @@ Hardware tab:
   cpu.W sources), built from whatever the daemon actually logs — a source
   this host doesn't have (no NVMe, 2 GPUs instead of 3, disks named beyond
   sdf) simply has no chips and no panel. + `/api/data` + `/api/hardware`
-  JSON. Env: THERMAL_WEB_HOST (0.0.0.0), THERMAL_WEB_PORT (9066),
+  JSON. Env: THERMAL_WEB_HOST (0.0.0.0), THERMAL_WEB_PORT (9096),
   THERMAL_WEB_TRIP_C (cpu trip line), THERMAL_HW_FILE.
 - `thermal-graph.service` — systemd unit (Restart=always, enabled).
 - `thermal.txt` — post-mortem inspection notes (what to look for after a death).
@@ -90,8 +90,8 @@ sudo systemctl enable --now thermal-daemon thermal-graph
 
 ## Firewall (source-restricted to the two viewers)
 ```
-sudo ufw allow from 192.168.0.33  to any port 9066 proto tcp   # i7  (Linux boot)
-sudo ufw allow from 192.168.0.100 to any port 9066 proto tcp   # ak  (Windows boot)
+sudo ufw allow from 192.168.0.33  to any port 9096 proto tcp   # i7  (Linux boot)
+sudo ufw allow from 192.168.0.100 to any port 9096 proto tcp   # ak  (Windows boot)
 ```
 Note: ak and i7 are ONE physical dual-boot machine — only one IP is up at a
 time; both rules are needed so whichever boot is live can open the dashboard.

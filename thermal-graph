@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """thermal-graph — tiny web dashboard for /var/log/thermal.log (+ .1/.2).
 
-Serves 0.0.0.0:9066 (override: THERMAL_WEB_HOST / THERMAL_WEB_PORT /
+Serves 0.0.0.0:9096 (override: THERMAL_WEB_HOST / THERMAL_WEB_PORT /
 THERMAL_LOG_DIR / THERMAL_WEB_TRIP_C — dashed cpu trip line, default 95).
 Stdlib only, no CDN — the page is fully self-contained.
 
@@ -29,7 +29,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOST = os.environ.get("THERMAL_WEB_HOST", "0.0.0.0")
-PORT = int(os.environ.get("THERMAL_WEB_PORT", "9066"))
+PORT = int(os.environ.get("THERMAL_WEB_PORT", "9096"))
 TRIP_C = os.environ.get("THERMAL_WEB_TRIP_C", "95")
 HOSTNAME = socket.gethostname()
 LOGDIR = os.environ.get("THERMAL_LOG_DIR", "/var/log")
