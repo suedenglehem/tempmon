@@ -8,6 +8,7 @@ Stdlib-only Python (curses), zero deps. Tails `/var/log/thermal.log`
     ./tempmon.py --log PATH --history N --interval 3
     ./tempmon.py -hw             # pro: device names next to the labels
     THERMAL_HW_FILE=... -hw      # override inventory path
+    ../thermal_nc                # pro launcher (repo root) = tempmon.py -hw
 
 The graphs auto-fit the terminal width (or pin the history window
 with --history N), so a bigger terminal shows more history.
