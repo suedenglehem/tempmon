@@ -6,23 +6,23 @@ Stdlib-only Python (curses), zero deps. Tails `/var/log/thermal.log`
     ./tempmon.py                 # default log /var/log/thermal.log
     THERMAL_LOG=... ./tempmon.py # env override, same hook as the daemon
     ./tempmon.py --log PATH --history N --interval 3
-    ./tempmon.py -hw             # pro: device names next to the labels
+    ./tempmon.py -hw             # with -hw: device names next to the labels
     THERMAL_HW_FILE=... -hw      # override inventory path
-    ../thermal_nc                # pro launcher (repo root) = tempmon.py -hw
+    ../thermal_nc                # launcher (repo root) = tempmon.py -hw
 
 The graphs auto-fit the terminal width (or pin the history window
 with --history N), so a bigger terminal shows more history.
 
-Pro mode (-hw): names come from the daemon's own inventory
+With -hw: names come from the daemon's own inventory
 (/var/lib/thermal/hardware.json) — CPU model, GPU model, disk vendor.
 Names are squeezed into a 10-col whole-word column next to the CPU /
 GPU / HDD labels and values shift right to match. GPUs get ONE PER LINE
-(gpu0..gpuN, each with its own name and its own color; plain mode also
-labels each line with its knob, so "53/45/48" is never ambiguous).
-Disks get ONE DEVICE PER LINE in pro mode (knob + its own name; "?"
-when the inventory lacks it), so every hw id is visible — plain mode
-keeps the compact single row. No/legacy json -> warns once and runs
-plain.
+either way (gpu0..gpuN, each with its own name and its own color;
+without -hw the line still carries its knob, so "53/45/48" is never
+ambiguous). Disks get ONE DEVICE PER LINE with -hw (knob + its own
+name; "?" when the inventory lacks it), so every hw id is visible —
+without -hw they share the compact single row. No/legacy json -> warns
+once and runs without names.
 
 Shows: cpu.Tctl/Tdie + cpu.W, every gpuN + gpu.W, nvme/disk temps
 (whatever the host logs — fields are parsed generically), MEM used /

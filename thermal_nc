@@ -1,4 +1,4 @@
 #!/bin/sh
-# thermal_nc — launcher for the tempmon ncurses viewer, pro mode (-hw).
+# thermal_nc — launcher for the tempmon ncurses viewer, runs it with -hw.
 # Resolves its own dir, so the same file works wherever the repo is cloned.
 exec python3 "$(dirname "$0")/ncurses/tempmon.py" -hw "$@"

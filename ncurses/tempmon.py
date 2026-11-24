@@ -14,13 +14,13 @@ text only — no graph) is not in the log, so the app polls
 /proc/meminfo itself on the same tick. The bottom status line shows the
 last sample's age with a LIVE/STALE flag.
 
-Pro mode (-hw / --hw): recovers device names from the daemon's hardware
+With -hw / --hw: recovers device names from the daemon's hardware
 inventory (THERMAL_HW_FILE, default /var/lib/thermal/hardware.json) and
 shows them in a 10-col column next to the CPU/GPU/HDD labels.
 
 Keys:  q quit
 Env:   THERMAL_LOG       log path (default /var/log/thermal.log)
-       THERMAL_HW_FILE   hardware json (pro mode)
+       THERMAL_HW_FILE   hardware json (used with -hw)
 """
 import argparse
 import curses
@@ -228,7 +228,7 @@ def draw(scr, log_path, hist_n, interval, color_ok, deg, unicode_ok, mem_now, hw
                 pass
 
     A_DIM = curses.A_DIM if hasattr(curses, "A_DIM") else curses.A_BOLD
-    put(0, 0, f" tempmon — {log_path}{' pro' if hw else ''} ", curses.A_BOLD)
+    put(0, 0, f" tempmon — {log_path} ", curses.A_BOLD)
     put(0, max(0, cols - 8), "q quit", A_DIM)
     put(1, 0, ("─" if unicode_ok else "-") * (cols - 1), A_DIM)
 
@@ -249,7 +249,7 @@ def draw(scr, log_path, hist_n, interval, color_ok, deg, unicode_ok, mem_now, hw
     kv = last.kv
     win = hist_n if hist_n and hist_n > 0 else max(40, cols - 7)
     hist = samples[-win:]
-    # pro mode (-hw): 10-col device-name column after the labels, values shift right
+    # -hw: 10-col device-name column after the labels, values shift right
     X = 12 if hw else 0
 
     def name_col(y, name):
@@ -296,7 +296,7 @@ def draw(scr, log_path, hist_n, interval, color_ok, deg, unicode_ok, mem_now, hw
         name_col(row, "")
         row += 1
     if hw and others:
-        # pro mode: one device per line — every knob gets its own hw-name row
+        # -hw: one device per line — every knob gets its own hw-name row
         for i, (k, v) in enumerate(sorted(others.items())):
             if i == 0:
                 put(row, 1, "HDD", curses.A_BOLD)
@@ -372,7 +372,7 @@ def run():
     ap.add_argument("--interval", type=float, default=3.0,
                     help="refresh seconds (default 3, matches the daemon)")
     ap.add_argument("-hw", "--hw", action="store_true",
-                    help="pro mode: hardware names in a 10-col next to the labels")
+                    help="show hardware names in a 10-col next to the labels")
     ap.add_argument("--hw-file", default=os.environ.get("THERMAL_HW_FILE",
                                                         "/var/lib/thermal/hardware.json"),
                     help="hardware inventory json (thermal-daemon's, world-readable)")
@@ -385,7 +385,7 @@ def run():
     utf8 = locale.getpreferredencoding(False).upper().replace("-", "") == "UTF8"
     deg, spark = ("°C", True) if utf8 else (" C", False)
 
-    # pro mode: names are loaded once — the daemon rewrites the file only at boot
+    # -hw: names are loaded once — the daemon rewrites the file only at boot
     hw = read_hw(args.hw_file) if args.hw else None
     if args.hw and hw is None:
         print(f"warning: -hw given but {args.hw_file} unreadable — no names",

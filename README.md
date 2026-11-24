@@ -42,9 +42,9 @@ Hardware tab:
   JSON. Env: THERMAL_WEB_HOST (0.0.0.0), THERMAL_WEB_PORT (9096),
   THERMAL_WEB_TRIP_C (cpu trip line), THERMAL_HW_FILE.
 - `thermal-graph.service` — systemd unit (Restart=always, enabled).
-- `thermal_nc` — launcher for the ncurses viewer (`ncurses/tempmon.py`) in
-  **pro mode** (`-hw`: per-GPU lines with device names, bottom status line);
-  resolves its own dir, so it runs the repo it lives in from anywhere.
+- `thermal_nc` — launcher for the ncurses viewer (`ncurses/tempmon.py`),
+  runs it with `-hw` (per-GPU lines with device names, bottom status
+  line); resolves its own dir, so it runs the repo it lives in from anywhere.
 - `thermal.txt` — post-mortem inspection notes (what to look for after a death).
 - `install.sh` — one-shot installer (Debian/Ubuntu, root): installs
   **smartmontools** (disk temp retrieval), the two programs and their units,
