@@ -14,6 +14,9 @@ Live tab:
 Hardware tab:
 ![hardware tab](screenshots/hw.png)
 
+Terminal viewer with -hw (`thermal_nc`):
+![ncurses viewer](screenshots/thermal_nc.jpg)
+
 ## Contents
 - `thermal-daemon` — POSIX sh logger: cpu (AMD k10temp / Intel coretemp —
   fields stay cpu.Tctl=package/control, cpu.Tdie=die/core0), cpu power
