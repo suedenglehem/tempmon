@@ -15,16 +15,19 @@ with --history N), so a bigger terminal shows more history.
 Pro mode (-hw): names come from the daemon's own inventory
 (/var/lib/thermal/hardware.json) — CPU model, GPU model, disk vendor.
 Names are squeezed into a 10-col whole-word column next to the CPU /
-GPU / HDD labels and values shift right to match. GPU: shared model
-shows as NxName (e.g. 3xRTX 3090); mixed fleet as first+N. Disks get
-ONE DEVICE PER LINE in pro mode (knob + its own name; "?" when the
-inventory lacks it), so every hw id is visible — plain mode keeps the
-compact single row. No/legacy json -> warns once and runs plain.
+GPU / HDD labels and values shift right to match. GPUs get ONE PER LINE
+(gpu0..gpuN, each with its own name and its own color; plain mode also
+labels each line with its knob, so "53/45/48" is never ambiguous).
+Disks get ONE DEVICE PER LINE in pro mode (knob + its own name; "?"
+when the inventory lacks it), so every hw id is visible — plain mode
+keeps the compact single row. No/legacy json -> warns once and runs
+plain.
 
 Shows: cpu.Tctl/Tdie + cpu.W, every gpuN + gpu.W, nvme/disk temps
 (whatever the host logs — fields are parsed generically), MEM used /
-free / swap (all totals, from /proc/meminfo), the last sample's age
-with a LIVE/STALE flag, and two-row dot bar graphs — · small dot,
+free (totals, from /proc/meminfo — no swap), the last sample's age with
+a LIVE/STALE flag on the bottom status line (with the refresh rate),
+and two-row dot bar graphs — · small dot,
 ● big dot, five levels per column, twice a sparkline's height,
 auto-fit to terminal width — for CPU and GPU-max, each with min/max/avg.
 Memory is not in the log — the app polls /proc/meminfo itself every

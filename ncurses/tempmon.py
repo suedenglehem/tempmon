@@ -9,8 +9,10 @@ with 0..n GPUs / nvme / disks render fine.
 The CPU / GPU graphs are two-row dot bar charts (· small dot, ● big dot,
 filled bottom-up) — twice the height of a plain sparkline, five
 quantization levels per column — and their width auto-fits the
-terminal, so a bigger terminal shows more history. Memory (used/free/swap, text only — no graph) is not in
-the log, so the app polls /proc/meminfo itself on the same tick.
+terminal, so a bigger terminal shows more history. Memory (used/free,
+text only — no graph) is not in the log, so the app polls
+/proc/meminfo itself on the same tick. The bottom status line shows the
+last sample's age with a LIVE/STALE flag.
 
 Pro mode (-hw / --hw): recovers device names from the daemon's hardware
 inventory (THERMAL_HW_FILE, default /var/lib/thermal/hardware.json) and
@@ -67,7 +69,7 @@ def read_samples(path, cap=4000):
 def read_meminfo():
     """Poll /proc/meminfo ourselves — thermal.log has no memory data.
     Returns dict of the fields we care about (kB), or None on failure."""
-    want = ("MemTotal", "MemFree", "MemAvailable", "SwapTotal", "SwapFree")
+    want = ("MemTotal", "MemFree", "MemAvailable")
     try:
         with open("/proc/meminfo") as f:
             vals = {}
@@ -260,18 +262,11 @@ def draw(scr, log_path, hist_n, interval, color_ok, deg, unicode_ok, mem_now, hw
     if hw:
         cpu_n = cpu_name(hw)
         gmap = {g.get("knob"): gpu_name(g.get("name", "")) for g in hw.get("gpus", [])}
-        gnames = list(dict.fromkeys(gmap[k] for k in gpu_keys if gmap.get(k)))
-        if len(gnames) == 1 and len(gpu_keys) > 1:  # e.g. "3xRTX 3090"
-            cnt = len(gpu_keys)
-            gpu_n = f"{cnt}x{gnames[0][:max(1, 9 - len(str(cnt)))]}"
-        elif len(gnames) > 1:  # mixed models: first + extra count
-            gpu_n = f"{gnames[0][:8]}+{len(gnames) - 1}"
-        else:
-            gpu_n = gnames[0] if gnames else ""
         dmap = disk_names(hw)
     else:
         dmap = {}
-        cpu_n = gpu_n = ""
+        gmap = {}
+        cpu_n = ""
 
     row = 2
     put(row, 1, "CPU", curses.A_BOLD)
@@ -283,16 +278,23 @@ def draw(scr, log_path, hist_n, interval, color_ok, deg, unicode_ok, mem_now, hw
     if "cpu.W" in kv:
         put(row, 34 + X, f"{fmt(kv['cpu.W'])} W", A_DIM)
     row += 1
-    put(row, 1, "GPU", curses.A_BOLD)
-    name_col(row, gpu_n)
-    gpu_vals = [kv[k] for k in gpu_keys]  # every gpuN: tr4 logs gpu0..gpu2
-    gtxt = ""
-    if gpu_vals:
-        gtxt = "/".join(fmt(v) for v in gpu_vals) + deg
-        put(row, 6 + X, gtxt, tattr(max(gpu_vals), color_ok))
-    if "gpu.W" in kv:
-        put(row, max(20 + X, 6 + X + len(gtxt) + 3), f"{fmt(kv['gpu.W'])} W", A_DIM)
-    row += 1
+    # one GPU per line: tr4 logs gpu0..gpu2 and "53/45/48°C" says nothing
+    if gpu_keys:
+        for i, k in enumerate(gpu_keys):
+            if i == 0:
+                put(row, 1, "GPU", curses.A_BOLD)
+                if "gpu.W" in kv:
+                    gtxt = f"{k} {fmt(kv[k])}{deg}"
+                    put(row, max(22 + X, 6 + X + len(gtxt) + 3),
+                        f"{fmt(kv['gpu.W'])} W", A_DIM)
+            if hw:
+                put(row, 6, (gmap.get(k) or "?").ljust(10), A_DIM)
+            put(row, 6 + X, f"{k} {fmt(kv[k])}{deg}", tattr(kv[k], color_ok))
+            row += 1
+    else:
+        put(row, 1, "GPU", curses.A_BOLD)
+        name_col(row, "")
+        row += 1
     if hw and others:
         # pro mode: one device per line — every knob gets its own hw-name row
         for i, (k, v) in enumerate(sorted(others.items())):
@@ -315,23 +317,14 @@ def draw(scr, log_path, hist_n, interval, color_ok, deg, unicode_ok, mem_now, hw
         put(row, 6 + X, f"used {fmt_kb(used)} of {fmt_kb(total)} ({pct:.0f}%)",
             pct_attr(pct, color_ok))
         put(row, 33 + X, f"free {fmt_kb(avail)}", color_ok and curses.color_pair(4) or curses.A_BOLD)
-        st = mem_now.get("SwapTotal", 0)
-        if st:
-            put(row, 47 + X, f"swap {fmt_kb(st - mem_now.get('SwapFree', 0))}/{fmt_kb(st)}", A_DIM)
     else:
         put(row, 6 + X, "cannot read /proc/meminfo", A_DIM)
     row += 1
 
-    age = (datetime.now() - last.ts).total_seconds()
-    put(row, 1, f"sample {last.ts:%H:%M:%S}  {age:.0f}s ago")
-    if age > STALE_AFTER:
-        put(row, 34 + X, "STALE", curses.color_pair(3) | curses.A_BOLD if color_ok else curses.A_BOLD)
-    else:
-        put(row, 34 + X, "LIVE", curses.color_pair(4) | curses.A_BOLD if color_ok else curses.A_BOLD)
-    row += 2  # one empty line under "sample ..." before the graphs
+    row += 2  # blank line under MEM before the graphs
 
     def graph(y, label, vals):
-        if not vals or y + 2 >= rows:
+        if not vals or y + 2 >= rows - 1:  # keep clear of the footer line
             return
         top, bot = spark2(vals, cols - 7, unicode_ok)
         attr = tattr(vals[-1], color_ok)
@@ -344,7 +337,15 @@ def draw(scr, log_path, hist_n, interval, color_ok, deg, unicode_ok, mem_now, hw
 
     graph(row, "CPU", series(hist, "cpu.Tctl"))
     graph(row + 4, "GPU", series_max(hist, gpu_keys))
-    put(rows - 1, 0, f" refresh {interval:.0f}s · window {len(hist)} samples", A_DIM)
+
+    # status line: very bottom of the screen (graphs' guard keeps rows-1 free)
+    age = (datetime.now() - last.ts).total_seconds()
+    put(rows - 1, 1, f"sample {last.ts:%H:%M:%S}  {age:.0f}s ago")
+    if age > STALE_AFTER:
+        put(rows - 1, 34 + X, "STALE", curses.color_pair(3) | curses.A_BOLD if color_ok else curses.A_BOLD)
+    else:
+        put(rows - 1, 34 + X, "LIVE", curses.color_pair(4) | curses.A_BOLD if color_ok else curses.A_BOLD)
+    put(rows - 1, max(0, cols - 11), f"refresh {interval:.0f}s", A_DIM)
     scr.noutrefresh()
     curses.doupdate()
 
