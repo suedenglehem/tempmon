@@ -12,14 +12,21 @@ quantization levels per column — and their width auto-fits the
 terminal, so a bigger terminal shows more history. Memory (used/free/swap, text only — no graph) is not in
 the log, so the app polls /proc/meminfo itself on the same tick.
 
+Pro mode (-hw / --hw): recovers device names from the daemon's hardware
+inventory (THERMAL_HW_FILE, default /var/lib/thermal/hardware.json) and
+shows them in a 10-col column next to the CPU/GPU/HDD labels.
+
 Keys:  q quit
-Env:   THERMAL_LOG   log path (default /var/log/thermal.log)
+Env:   THERMAL_LOG       log path (default /var/log/thermal.log)
+       THERMAL_HW_FILE   hardware json (pro mode)
 """
 import argparse
 import curses
+import json
 import locale
 import os
 import re
+import sys
 from datetime import datetime
 
 PREFIX_RE = re.compile(r"^(\d{2}:\d{2}:\d{2})\s+(\d{2}/\d{2}/\d{4})\s+(.*)$")
@@ -94,6 +101,57 @@ def pct_attr(p, color_ok):
     return curses.color_pair(1)
 
 
+def read_hw(path):
+    """thermal-daemon's knob->device inventory; None if absent/unreadable."""
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def col(s, w=10):
+    """Squeeze a device name into the fixed 10-col name column: keep whole
+    leading words while they fit, hard-cut only as a last resort."""
+    s = re.sub(r"\s+", " ", str(s)).strip()
+    out = ""
+    for p in s.split(" "):
+        cand = f"{out} {p}".strip()
+        if len(cand) > w and out:
+            break
+        out = cand
+    return (out or s)[:w]
+
+
+def cpu_name(hw):
+    s = re.sub(r"\((R|TM|C)\)", "", hw.get("cpu") or "")
+    toks = [t for t in re.split(r"\s+", s) if t]
+    noise = re.compile(r"(?i)core|gen|processor|bit|with|graphics|amd|oem")
+    dig = [t for t in toks if re.search(r"\d", t) and not noise.search(t)
+           and not re.search(r"\d(st|nd|rd|th)$", t)]
+    alnum = [t for t in dig if re.search(r"[A-Za-z]", t)]
+    dash = [t for t in alnum if "-" in t]
+    pick = (dash or alnum or dig or toks[-1:])[0]
+    return pick[:10]
+
+
+def gpu_name(n):
+    n = re.sub(r"NVIDIA|GeForce|Graphics|Card|Advanced Micro Devices|0x\w+",
+               "", str(n), flags=re.I)
+    return col(n)
+
+
+def disk_names(hw):
+    """knob -> short name; device nvme0n1 maps to log knob nvme0, sda stays."""
+    out = {}
+    for d in (hw or {}).get("disks", []):
+        nm = f"{d.get('vendor', '')} {d.get('model', '')}".strip() or d.get("name", "")
+        knob = re.sub(r"n\d+$", "", str(d.get("name", "")))
+        if knob:
+            out.setdefault(knob, col(nm))
+    return out
+
+
 def series(hist, key):
     return [s.kv[key] for s in hist if key in s.kv]
 
@@ -156,7 +214,7 @@ def init_colors(scr):
     return True
 
 
-def draw(scr, log_path, hist_n, interval, color_ok, deg, unicode_ok, mem_now):
+def draw(scr, log_path, hist_n, interval, color_ok, deg, unicode_ok, mem_now, hw):
     scr.erase()
     rows, cols = scr.getmaxyx()
 
@@ -168,7 +226,7 @@ def draw(scr, log_path, hist_n, interval, color_ok, deg, unicode_ok, mem_now):
                 pass
 
     A_DIM = curses.A_DIM if hasattr(curses, "A_DIM") else curses.A_BOLD
-    put(0, 0, f" tempmon — {log_path} ", curses.A_BOLD)
+    put(0, 0, f" tempmon — {log_path}{' pro' if hw else ''} ", curses.A_BOLD)
     put(0, max(0, cols - 8), "q quit", A_DIM)
     put(1, 0, ("─" if unicode_ok else "-") * (cols - 1), A_DIM)
 
@@ -189,47 +247,88 @@ def draw(scr, log_path, hist_n, interval, color_ok, deg, unicode_ok, mem_now):
     kv = last.kv
     win = hist_n if hist_n and hist_n > 0 else max(40, cols - 7)
     hist = samples[-win:]
+    # pro mode (-hw): 10-col device-name column after the labels, values shift right
+    X = 12 if hw else 0
+
+    def name_col(y, name):
+        if hw:
+            put(y, 6, (name or "")[:10].ljust(10), A_DIM)
+
     gpu_keys = sorted(k for k in kv if k.startswith("gpu") and k != "gpu.W")
-    put(2, 1, "CPU", curses.A_BOLD)
-    if "cpu.Tctl" in kv:
-        put(2, 6, f"{fmt(kv['cpu.Tctl'])}{deg}", tattr(kv["cpu.Tctl"], color_ok))
-    if "cpu.Tdie" in kv:
-        put(2, 18, f"Tdie {fmt(kv['cpu.Tdie'])}{deg}", tattr(kv["cpu.Tdie"], color_ok))
-    if "cpu.W" in kv:
-        put(2, 34, f"{fmt(kv['cpu.W'])} W", A_DIM)
-    gpu_last = series_max([last], gpu_keys)
-    put(3, 1, "GPU", curses.A_BOLD)
-    if gpu_last:
-        put(3, 6, f"{fmt(gpu_last[0])}{deg}", tattr(gpu_last[0], color_ok))
-    if "gpu.W" in kv:
-        put(3, 18, f"{fmt(kv['gpu.W'])} W", A_DIM)
     others = {k: v for k, v in kv.items()
               if k.startswith("nvme") or re.match(r"^sd[a-z]$", k)}
-    if others:
-        put(4, 1, "HDD", curses.A_BOLD)
-        put(4, 6, "  ".join(f"{k} {fmt(v)}{deg}" for k, v in sorted(others.items())))
+    if hw:
+        cpu_n = cpu_name(hw)
+        gmap = {g.get("knob"): gpu_name(g.get("name", "")) for g in hw.get("gpus", [])}
+        gnames = list(dict.fromkeys(gmap[k] for k in gpu_keys if gmap.get(k)))
+        if len(gnames) == 1 and len(gpu_keys) > 1:  # e.g. "3xRTX 3090"
+            cnt = len(gpu_keys)
+            gpu_n = f"{cnt}x{gnames[0][:max(1, 9 - len(str(cnt)))]}"
+        elif len(gnames) > 1:  # mixed models: first + extra count
+            gpu_n = f"{gnames[0][:8]}+{len(gnames) - 1}"
+        else:
+            gpu_n = gnames[0] if gnames else ""
+        dmap = disk_names(hw)
+    else:
+        dmap = {}
+        cpu_n = gpu_n = ""
 
-    put(5, 1, "MEM", curses.A_BOLD)
+    row = 2
+    put(row, 1, "CPU", curses.A_BOLD)
+    name_col(row, cpu_n)
+    if "cpu.Tctl" in kv:
+        put(row, 6 + X, f"{fmt(kv['cpu.Tctl'])}{deg}", tattr(kv["cpu.Tctl"], color_ok))
+    if "cpu.Tdie" in kv:
+        put(row, 18 + X, f"Tdie {fmt(kv['cpu.Tdie'])}{deg}", tattr(kv["cpu.Tdie"], color_ok))
+    if "cpu.W" in kv:
+        put(row, 34 + X, f"{fmt(kv['cpu.W'])} W", A_DIM)
+    row += 1
+    put(row, 1, "GPU", curses.A_BOLD)
+    name_col(row, gpu_n)
+    gpu_vals = [kv[k] for k in gpu_keys]  # every gpuN: tr4 logs gpu0..gpu2
+    gtxt = ""
+    if gpu_vals:
+        gtxt = "/".join(fmt(v) for v in gpu_vals) + deg
+        put(row, 6 + X, gtxt, tattr(max(gpu_vals), color_ok))
+    if "gpu.W" in kv:
+        put(row, max(20 + X, 6 + X + len(gtxt) + 3), f"{fmt(kv['gpu.W'])} W", A_DIM)
+    row += 1
+    if hw and others:
+        # pro mode: one device per line — every knob gets its own hw-name row
+        for i, (k, v) in enumerate(sorted(others.items())):
+            if i == 0:
+                put(row, 1, "HDD", curses.A_BOLD)
+            put(row, 6, (dmap.get(k) or "?").ljust(10), A_DIM)
+            put(row, 6 + X, f"{k} {fmt(v)}{deg}")
+            row += 1
+    elif others:
+        put(row, 1, "HDD", curses.A_BOLD)
+        put(row, 6 + X, "  ".join(f"{k} {fmt(v)}{deg}" for k, v in sorted(others.items())))
+        row += 1
+
+    put(row, 1, "MEM", curses.A_BOLD)
     if mem_now and mem_now.get("MemTotal"):
         total = mem_now["MemTotal"]
         avail = mem_now.get("MemAvailable", mem_now.get("MemFree", 0))
         used = total - avail
         pct = 100.0 * used / total
-        put(5, 6, f"used {fmt_kb(used)} of {fmt_kb(total)} ({pct:.0f}%)",
+        put(row, 6 + X, f"used {fmt_kb(used)} of {fmt_kb(total)} ({pct:.0f}%)",
             pct_attr(pct, color_ok))
-        put(5, 33, f"free {fmt_kb(avail)}", color_ok and curses.color_pair(4) or curses.A_BOLD)
+        put(row, 33 + X, f"free {fmt_kb(avail)}", color_ok and curses.color_pair(4) or curses.A_BOLD)
         st = mem_now.get("SwapTotal", 0)
         if st:
-            put(5, 47, f"swap {fmt_kb(st - mem_now.get('SwapFree', 0))}/{fmt_kb(st)}", A_DIM)
+            put(row, 47 + X, f"swap {fmt_kb(st - mem_now.get('SwapFree', 0))}/{fmt_kb(st)}", A_DIM)
     else:
-        put(5, 6, "cannot read /proc/meminfo", A_DIM)
+        put(row, 6 + X, "cannot read /proc/meminfo", A_DIM)
+    row += 1
 
     age = (datetime.now() - last.ts).total_seconds()
-    put(6, 1, f"sample {last.ts:%H:%M:%S}  {age:.0f}s ago")
+    put(row, 1, f"sample {last.ts:%H:%M:%S}  {age:.0f}s ago")
     if age > STALE_AFTER:
-        put(6, 34, "STALE", curses.color_pair(3) | curses.A_BOLD if color_ok else curses.A_BOLD)
+        put(row, 34 + X, "STALE", curses.color_pair(3) | curses.A_BOLD if color_ok else curses.A_BOLD)
     else:
-        put(6, 34, "LIVE", curses.color_pair(4) | curses.A_BOLD if color_ok else curses.A_BOLD)
+        put(row, 34 + X, "LIVE", curses.color_pair(4) | curses.A_BOLD if color_ok else curses.A_BOLD)
+    row += 2  # one empty line under "sample ..." before the graphs
 
     def graph(y, label, vals):
         if not vals or y + 2 >= rows:
@@ -243,22 +342,22 @@ def draw(scr, log_path, hist_n, interval, color_ok, deg, unicode_ok, mem_now):
         put(y + 2, 7, f"min {fmt(lo)}  max {fmt(hi)}  avg {fmt(sum(vals) / len(vals))}"
                       f"  ({len(vals)})", A_DIM)
 
-    # row 7 stays empty under the "sample ..." line — whitespace before graphs
-    graph(8, "CPU", series(hist, "cpu.Tctl"))
-    graph(12, "GPU", series_max(hist, gpu_keys))
+    graph(row, "CPU", series(hist, "cpu.Tctl"))
+    graph(row + 4, "GPU", series_max(hist, gpu_keys))
     put(rows - 1, 0, f" refresh {interval:.0f}s · window {len(hist)} samples", A_DIM)
     scr.noutrefresh()
     curses.doupdate()
 
 
-def main(scr, log_path, hist_n, interval, deg, unicode_ok):
+def main(scr, log_path, hist_n, interval, deg, unicode_ok, hw):
     curses.curs_set(0)
     scr.timeout(int(interval * 1000))
     color_ok = init_colors(scr)
     mem_now = None
     while True:
         mem_now = read_meminfo() or mem_now  # keep last good values on failure
-        draw(scr, log_path, hist_n, interval, color_ok, deg, unicode_ok, mem_now)
+        draw(scr, log_path, hist_n, interval, color_ok, deg, unicode_ok,
+             mem_now, hw)
         if scr.getch() in (ord("q"), ord("Q")):
             break
 
@@ -271,6 +370,11 @@ def run():
                     help="samples in the graph window (default: fit terminal width)")
     ap.add_argument("--interval", type=float, default=3.0,
                     help="refresh seconds (default 3, matches the daemon)")
+    ap.add_argument("-hw", "--hw", action="store_true",
+                    help="pro mode: hardware names in a 10-col next to the labels")
+    ap.add_argument("--hw-file", default=os.environ.get("THERMAL_HW_FILE",
+                                                        "/var/lib/thermal/hardware.json"),
+                    help="hardware inventory json (thermal-daemon's, world-readable)")
     args = ap.parse_args()
 
     try:
@@ -280,8 +384,14 @@ def run():
     utf8 = locale.getpreferredencoding(False).upper().replace("-", "") == "UTF8"
     deg, spark = ("°C", True) if utf8 else (" C", False)
 
+    # pro mode: names are loaded once — the daemon rewrites the file only at boot
+    hw = read_hw(args.hw_file) if args.hw else None
+    if args.hw and hw is None:
+        print(f"warning: -hw given but {args.hw_file} unreadable — no names",
+              file=sys.stderr)
+
     try:
-        curses.wrapper(main, args.log, args.history, args.interval, deg, spark)
+        curses.wrapper(main, args.log, args.history, args.interval, deg, spark, hw)
     except KeyboardInterrupt:
         pass
 

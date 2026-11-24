@@ -6,9 +6,20 @@ Stdlib-only Python (curses), zero deps. Tails `/var/log/thermal.log`
     ./tempmon.py                 # default log /var/log/thermal.log
     THERMAL_LOG=... ./tempmon.py # env override, same hook as the daemon
     ./tempmon.py --log PATH --history N --interval 3
+    ./tempmon.py -hw             # pro: device names next to the labels
+    THERMAL_HW_FILE=... -hw      # override inventory path
 
 The graphs auto-fit the terminal width (or pin the history window
 with --history N), so a bigger terminal shows more history.
+
+Pro mode (-hw): names come from the daemon's own inventory
+(/var/lib/thermal/hardware.json) — CPU model, GPU model, disk vendor.
+Names are squeezed into a 10-col whole-word column next to the CPU /
+GPU / HDD labels and values shift right to match. GPU: shared model
+shows as NxName (e.g. 3xRTX 3090); mixed fleet as first+N. Disks get
+ONE DEVICE PER LINE in pro mode (knob + its own name; "?" when the
+inventory lacks it), so every hw id is visible — plain mode keeps the
+compact single row. No/legacy json -> warns once and runs plain.
 
 Shows: cpu.Tctl/Tdie + cpu.W, every gpuN + gpu.W, nvme/disk temps
 (whatever the host logs — fields are parsed generically), MEM used /
