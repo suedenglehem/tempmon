@@ -36,12 +36,13 @@ KV_RE = re.compile(r"([A-Za-z0-9_.]+)=([\d.]+)")
 # Temperature bands (°C): <45 deep blue, 45–59 green, 60–69 yellow,
 # 70–89 orange, 90+ red. Pair ids 10..14 = text colors, 20..24 = blob
 # (fg,bg) fills, assigned in init_colors. The 256-color ids give the
-# "deep" blue and a true orange; the 16-color list is the fallback.
+# "deep" blue and a gold-orange (214 — hot orange 208 read as a sibling
+# of the red band); the 16-color list is the fallback.
 BAND_HI = (45.0, 60.0, 70.0, 90.0)
-TEXT_256 = (27, 46, 220, 208, 196)
+TEXT_256 = (27, 46, 220, 214, 196)
 TEXT_16 = (curses.COLOR_BLUE, curses.COLOR_GREEN, curses.COLOR_YELLOW,
            curses.COLOR_RED, curses.COLOR_RED)
-BLOB_256 = ((231, 17), (231, 22), (16, 226), (16, 208), (231, 160))
+BLOB_256 = ((231, 17), (231, 22), (16, 226), (16, 214), (231, 160))
 BLOB_16 = ((curses.COLOR_WHITE, curses.COLOR_BLUE),
            (curses.COLOR_WHITE, curses.COLOR_GREEN),
            (curses.COLOR_BLACK, curses.COLOR_YELLOW),
