@@ -8,7 +8,7 @@ with 0..n GPUs / nvme / disks render fine.
 
 Temperatures are presented as one big colored blob per sensor (CPU and
 every GPU): the live value inside a filled rounded tile, color-graded
-deep blue <45 °C, green 45–59, yellow 60–69, orange 70–89, red 90+.
+deep blue <45 °C, green 45–59, yellow 60–69, orange 70–89, dark red 90+.
 Memory (used/free,
 text only — no graph) is not in the log, so the app polls
 /proc/meminfo itself on the same tick. The bottom status line shows the
@@ -34,20 +34,32 @@ from datetime import datetime
 PREFIX_RE = re.compile(r"^(\d{2}:\d{2}:\d{2})\s+(\d{2}/\d{2}/\d{4})\s+(.*)$")
 KV_RE = re.compile(r"([A-Za-z0-9_.]+)=([\d.]+)")
 # Temperature bands (°C): <45 deep blue, 45–59 green, 60–69 yellow,
-# 70–89 orange, 90+ red. Pair ids 10..14 = text colors, 20..24 = blob
-# (fg,bg) fills, assigned in init_colors. The 256-color ids give the
-# "deep" blue and a gold-orange (214 — hot orange 208 read as a sibling
-# of the red band); the 16-color list is the fallback.
+# 70–89 orange, 90+ dark red. Pair ids 10..14 = text colors, 20..24 =
+# blob (fg,bg) fills, assigned in init_colors. The 256-color ids give
+# the "deep" blue, a gold-orange (214 — hot orange 208 read as a
+# sibling of the red band) and a dark blood-red 88 for 90+ (160 read
+# too close to orange). A 16-color palette has no orange at all, so
+# there orange = bright yellow (11) against the yellow band's dark
+# yellow — bands stay separated by brightness instead of orange
+# collapsing into red; 90+ takes the standard dark red. 8-color keeps
+# the basic set only.
 BAND_HI = (45.0, 60.0, 70.0, 90.0)
 TEXT_256 = (27, 46, 220, 214, 196)
+BLOB_256 = ((231, 17), (231, 22), (16, 226), (16, 214), (231, 88))
 TEXT_16 = (curses.COLOR_BLUE, curses.COLOR_GREEN, curses.COLOR_YELLOW,
-           curses.COLOR_RED, curses.COLOR_RED)
-BLOB_256 = ((231, 17), (231, 22), (16, 226), (16, 214), (231, 160))
+           11, curses.COLOR_RED)
 BLOB_16 = ((curses.COLOR_WHITE, curses.COLOR_BLUE),
            (curses.COLOR_WHITE, curses.COLOR_GREEN),
            (curses.COLOR_BLACK, curses.COLOR_YELLOW),
-           (curses.COLOR_BLACK, curses.COLOR_RED),
-           (curses.COLOR_BLACK, curses.COLOR_RED))
+           (curses.COLOR_BLACK, 11),
+           (curses.COLOR_WHITE, curses.COLOR_RED))
+TEXT_8 = (curses.COLOR_BLUE, curses.COLOR_GREEN, curses.COLOR_YELLOW,
+          curses.COLOR_YELLOW, curses.COLOR_RED)
+BLOB_8 = ((curses.COLOR_BLACK, curses.COLOR_BLUE),
+          (curses.COLOR_BLACK, curses.COLOR_GREEN),
+          (curses.COLOR_BLACK, curses.COLOR_YELLOW),
+          (curses.COLOR_BLACK, curses.COLOR_YELLOW),
+          (curses.COLOR_BLACK, curses.COLOR_RED))
 STALE_AFTER = 10.0  # daemon writes every 3 s; >10 s old → stale
 
 
@@ -182,7 +194,7 @@ def tattr(v, color_ok):
     if not color_ok:
         return curses.A_BOLD
     b = band(v)
-    return curses.color_pair(10 + b) | (curses.A_BOLD if b == 4 else 0)
+    return curses.color_pair(10 + b) | (curses.A_BOLD if b >= 3 else 0)
 
 
 def blob_attr(v, color_ok):
@@ -200,11 +212,19 @@ def init_colors(scr):
     curses.init_pair(2, curses.COLOR_YELLOW, -1)
     curses.init_pair(3, curses.COLOR_RED, -1)
     curses.init_pair(4, curses.COLOR_CYAN, -1)
-    n = curses.COLORS >= 256
-    for i in range(5):
-        curses.init_pair(10 + i, (TEXT_256 if n else TEXT_16)[i], -1)
-        fg, bg = (BLOB_256 if n else BLOB_16)[i]
-        curses.init_pair(20 + i, fg, bg)
+    if curses.COLORS >= 256:
+        text, blobs = TEXT_256, BLOB_256
+    elif curses.COLORS >= 16:
+        text, blobs = TEXT_16, BLOB_16
+    else:
+        text, blobs = TEXT_8, BLOB_8
+    try:
+        for i in range(5):
+            curses.init_pair(10 + i, text[i], -1)
+            fg, bg = blobs[i]
+            curses.init_pair(20 + i, fg, bg)
+    except curses.error:  # odd terminal: mono bands beat a crash
+        return False
     return True
 
 
