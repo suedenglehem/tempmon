@@ -6,10 +6,10 @@ redraws every 3 s. Stdlib only, zero deps — same rule as the rest of
 the tempmon repo. Fields are parsed generically (key=value), so hosts
 with 0..n GPUs / nvme / disks render fine.
 
-The CPU / GPU graphs are two-row dot bar charts (· small dot, ● big dot,
-filled bottom-up) — twice the height of a plain sparkline, five
-quantization levels per column — and their width auto-fits the
-terminal, so a bigger terminal shows more history. Memory (used/free,
+Temperatures are presented as one big colored blob per sensor (CPU and
+every GPU): the live value inside a filled rounded tile, color-graded
+deep blue <45 °C, green 45–59, yellow 60–69, orange 70–89, red 90+.
+Memory (used/free,
 text only — no graph) is not in the log, so the app polls
 /proc/meminfo itself on the same tick. The bottom status line shows the
 last sample's age with a LIVE/STALE flag.
@@ -33,8 +33,20 @@ from datetime import datetime
 
 PREFIX_RE = re.compile(r"^(\d{2}:\d{2}:\d{2})\s+(\d{2}/\d{2}/\d{4})\s+(.*)$")
 KV_RE = re.compile(r"([A-Za-z0-9_.]+)=([\d.]+)")
-BAR_UNICODE = {0: (" ", " "), 1: (" ", "·"), 2: (" ", "●"), 3: ("·", "●"), 4: ("●", "●")}
-BAR_ASCII = {0: (" ", " "), 1: (" ", "."), 2: (" ", "#"), 3: (".", "#"), 4: ("#", "#")}
+# Temperature bands (°C): <45 deep blue, 45–59 green, 60–69 yellow,
+# 70–89 orange, 90+ red. Pair ids 10..14 = text colors, 20..24 = blob
+# (fg,bg) fills, assigned in init_colors. The 256-color ids give the
+# "deep" blue and a true orange; the 16-color list is the fallback.
+BAND_HI = (45.0, 60.0, 70.0, 90.0)
+TEXT_256 = (27, 46, 220, 208, 196)
+TEXT_16 = (curses.COLOR_BLUE, curses.COLOR_GREEN, curses.COLOR_YELLOW,
+           curses.COLOR_RED, curses.COLOR_RED)
+BLOB_256 = ((231, 17), (231, 22), (16, 226), (16, 208), (231, 160))
+BLOB_16 = ((curses.COLOR_WHITE, curses.COLOR_BLUE),
+           (curses.COLOR_WHITE, curses.COLOR_GREEN),
+           (curses.COLOR_BLACK, curses.COLOR_YELLOW),
+           (curses.COLOR_BLACK, curses.COLOR_RED),
+           (curses.COLOR_BLACK, curses.COLOR_RED))
 STALE_AFTER = 10.0  # daemon writes every 3 s; >10 s old → stale
 
 
@@ -154,43 +166,28 @@ def disk_names(hw):
     return out
 
 
-def series(hist, key):
-    return [s.kv[key] for s in hist if key in s.kv]
-
-
-def spark2(vals, width, unicode_ok=True):
-    """Two-row dot bar chart (· small dot, ● big dot), 5 levels per column
-    — twice the old single-row sparkline's height, but no block glyphs, so
-    no font/half-block slivers that render as gaps on some terminals.
-    Returns (top_line, bottom_line)."""
-    vals = list(vals)[-width:]
-    if not vals:
-        return "", ""
-    lo, hi = min(vals), max(vals)
-    table = BAR_UNICODE if unicode_ok else BAR_ASCII
-    top, bot = [], []
-    for v in vals:
-        t = 0.5 if hi == lo else (v - lo) / (hi - lo)
-        # floor(t*4 + 0.5), not round(): round() is banker's rounding and
-        # makes exact midpoints jitter a level between frames
-        t_ch, b_ch = table[int(t * 4 + 0.5)]
-        top.append(t_ch)
-        bot.append(b_ch)
-    return "".join(top), "".join(bot)
-
-
 def fmt(v):
     return f"{v:.0f}" if float(v).is_integer() else f"{v:.1f}"
+
+
+def band(v):
+    for i, hi in enumerate(BAND_HI):
+        if v < hi:
+            return i
+    return len(BAND_HI)  # 90+ → red
 
 
 def tattr(v, color_ok):
     if not color_ok:
         return curses.A_BOLD
-    if v >= 85:
-        return curses.color_pair(3) | curses.A_BOLD
-    if v >= 70:
-        return curses.color_pair(2)
-    return curses.color_pair(1)
+    b = band(v)
+    return curses.color_pair(10 + b) | (curses.A_BOLD if b == 4 else 0)
+
+
+def blob_attr(v, color_ok):
+    if not color_ok:
+        return curses.A_REVERSE | curses.A_BOLD
+    return curses.color_pair(20 + band(v))
 
 
 def init_colors(scr):
@@ -202,10 +199,15 @@ def init_colors(scr):
     curses.init_pair(2, curses.COLOR_YELLOW, -1)
     curses.init_pair(3, curses.COLOR_RED, -1)
     curses.init_pair(4, curses.COLOR_CYAN, -1)
+    n = curses.COLORS >= 256
+    for i in range(5):
+        curses.init_pair(10 + i, (TEXT_256 if n else TEXT_16)[i], -1)
+        fg, bg = (BLOB_256 if n else BLOB_16)[i]
+        curses.init_pair(20 + i, fg, bg)
     return True
 
 
-def draw(scr, log_path, hist_n, interval, color_ok, deg, unicode_ok, mem_now, hw):
+def draw(scr, log_path, interval, color_ok, deg, unicode_ok, mem_now, hw):
     scr.erase()
     rows, cols = scr.getmaxyx()
 
@@ -236,8 +238,6 @@ def draw(scr, log_path, hist_n, interval, color_ok, deg, unicode_ok, mem_now, hw
 
     last = samples[-1]
     kv = last.kv
-    win = hist_n if hist_n and hist_n > 0 else max(40, cols - 7)
-    hist = samples[-win:]
     # -hw: 10-col device-name column after the labels, values shift right
     X = 12 if hw else 0
 
@@ -318,28 +318,34 @@ def draw(scr, log_path, hist_n, interval, color_ok, deg, unicode_ok, mem_now, hw
         put(row, 6 + X, "cannot read /proc/meminfo", A_DIM)
     row += 1
 
-    row += 2  # blank line under MEM before the graphs
+    row += 2  # blank line under MEM before the blob board
 
-    def graph(y, label, vals):
-        if not vals or y + 2 >= rows - 1:  # keep clear of the footer line
-            return
-        top, bot = spark2(vals, cols - 7, unicode_ok)
-        attr = tattr(vals[-1], color_ok)
-        put(y, 1, label, curses.A_BOLD)
-        put(y, 7, top, attr)
-        put(y + 1, 7, bot, attr)
-        lo, hi = min(vals), max(vals)
-        put(y + 2, 7, f"min {fmt(lo)}  max {fmt(hi)}  avg {fmt(sum(vals) / len(vals))}"
-                      f"  ({len(vals)})", A_DIM)
-
-    # one graph per GPU (tr4's 3090/3080Ti/3090 each get their own curve)
-    graph(row, "CPU", series(hist, "cpu.Tctl"))
-    gy = row + 4
+    # blob board: one big rounded tile per sensor with the live temp
+    # inside, filled in the band's color (deep blue cold → red hot)
+    board = []
+    if "cpu.Tctl" in kv:
+        board.append(("cpu", kv["cpu.Tctl"]))
     for k in gpu_keys:
-        graph(gy, k.replace("gpu", "GPU"), series(hist, k))
-        gy += 4
+        board.append((k.upper(), kv[k]))
+    bx = 2
+    if row + 3 < rows - 1:  # the whole board or nothing (status line free)
+        for lab, v in board:
+            t = f"{fmt(v)}°C" if unicode_ok else f"{fmt(v)}C"
+            w = max(6, len(t) + 2)
+            if bx + w + 2 < cols - 1:
+                a = blob_attr(v, color_ok)
+                if unicode_ok:
+                    put(row, bx, "╭" + "─" * w + "╮", a)
+                    put(row + 1, bx, "│" + t.center(w + 2) + "│", a)
+                    put(row + 2, bx, "╰" + "─" * w + "╯", a)
+                else:
+                    put(row, bx, "+" + "-" * w + "+", a)
+                    put(row + 1, bx, "|" + t.center(w + 2) + "|", a)
+                    put(row + 2, bx, "+" + "-" * w + "+", a)
+                put(row + 3, bx + max(0, (w + 2 - len(lab)) // 2), lab, A_DIM)
+            bx += w + 6
 
-    # status line: very bottom of the screen (graphs' guard keeps rows-1 free)
+    # status line: very bottom of the screen (board skips before it)
     age = (datetime.now() - last.ts).total_seconds()
     put(rows - 1, 1, f"sample {last.ts:%H:%M:%S}  {age:.0f}s ago")
     if age > STALE_AFTER:
@@ -351,14 +357,14 @@ def draw(scr, log_path, hist_n, interval, color_ok, deg, unicode_ok, mem_now, hw
     curses.doupdate()
 
 
-def main(scr, log_path, hist_n, interval, deg, unicode_ok, hw):
+def main(scr, log_path, interval, deg, unicode_ok, hw):
     curses.curs_set(0)
     scr.timeout(int(interval * 1000))
     color_ok = init_colors(scr)
     mem_now = None
     while True:
         mem_now = read_meminfo() or mem_now  # keep last good values on failure
-        draw(scr, log_path, hist_n, interval, color_ok, deg, unicode_ok,
+        draw(scr, log_path, interval, color_ok, deg, unicode_ok,
              mem_now, hw)
         if scr.getch() in (ord("q"), ord("Q")):
             break
@@ -368,8 +374,6 @@ def run():
     ap = argparse.ArgumentParser(description="ncurses viewer for thermal.log")
     ap.add_argument("--log", default=os.environ.get("THERMAL_LOG",
                                                     "/var/log/thermal.log"))
-    ap.add_argument("--history", type=int, default=None,
-                    help="samples in the graph window (default: fit terminal width)")
     ap.add_argument("--interval", type=float, default=3.0,
                     help="refresh seconds (default 3, matches the daemon)")
     ap.add_argument("-hw", "--hw", action="store_true",
@@ -384,7 +388,7 @@ def run():
     except locale.Error:
         pass
     utf8 = locale.getpreferredencoding(False).upper().replace("-", "") == "UTF8"
-    deg, spark = ("°C", True) if utf8 else (" C", False)
+    deg, unicode_ok = ("°C", True) if utf8 else (" C", False)
 
     # -hw: names are loaded once — the daemon rewrites the file only at boot
     hw = read_hw(args.hw_file) if args.hw else None
@@ -393,7 +397,7 @@ def run():
               file=sys.stderr)
 
     try:
-        curses.wrapper(main, args.log, args.history, args.interval, deg, spark, hw)
+        curses.wrapper(main, args.log, args.interval, deg, unicode_ok, hw)
     except KeyboardInterrupt:
         pass
 
