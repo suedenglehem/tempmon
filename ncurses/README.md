@@ -18,13 +18,12 @@ flag on the bottom status line (with the refresh rate).
 
 Blob board: every sensor (CPU and each GPU) also gets one big rounded
 tile with the live temp inside, colored by temperature — deep blue
-<45 °C, green 45–59, yellow 60–69, orange 70–89, dark red 90+. The
+<45 °C, green 45–59, violet 60–69, yellow 70–89, dark red 90+. The
 temp text in the rows uses the same grading. 256-color terminals get
-the deep blue, the true gold-orange and the dark red; 16-color
-terminals (which have no orange at all) keep the bands separated by
-brightness — orange is bright yellow next to the yellow band's dark
-yellow, 90+ is the standard red; 8-color keeps the basic set; mono
-chrome falls back to A_REVERSE.
+the deep blue, the saturated violet and the dark red; low-color
+terminals stand violet in as magenta, so all five bands stay
+distinguishable down to the basic 8 colors; mono chrome falls back
+to A_REVERSE.
 
 With -hw: names come from the daemon's own inventory
 (/var/lib/thermal/hardware.json) — CPU model, GPU model, disk vendor.

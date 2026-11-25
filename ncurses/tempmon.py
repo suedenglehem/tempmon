@@ -8,7 +8,7 @@ with 0..n GPUs / nvme / disks render fine.
 
 Temperatures are presented as one big colored blob per sensor (CPU and
 every GPU): the live value inside a filled rounded tile, color-graded
-deep blue <45 °C, green 45–59, yellow 60–69, orange 70–89, dark red 90+.
+deep blue <45 °C, green 45–59, violet 60–69, yellow 70–89, dark red 90+.
 Memory (used/free,
 text only — no graph) is not in the log, so the app polls
 /proc/meminfo itself on the same tick. The bottom status line shows the
@@ -33,31 +33,28 @@ from datetime import datetime
 
 PREFIX_RE = re.compile(r"^(\d{2}:\d{2}:\d{2})\s+(\d{2}/\d{2}/\d{4})\s+(.*)$")
 KV_RE = re.compile(r"([A-Za-z0-9_.]+)=([\d.]+)")
-# Temperature bands (°C): <45 deep blue, 45–59 green, 60–69 yellow,
-# 70–89 orange, 90+ dark red. Pair ids 10..14 = text colors, 20..24 =
+# Temperature bands (°C): <45 deep blue, 45–59 green, 60–69 violet,
+# 70–89 yellow, 90+ dark red. Pair ids 10..14 = text colors, 20..24 =
 # blob (fg,bg) fills, assigned in init_colors. The 256-color ids give
-# the "deep" blue, a gold-orange (214 — hot orange 208 read as a
-# sibling of the red band) and a dark blood-red 88 for 90+ (160 read
-# too close to orange). A 16-color palette has no orange at all, so
-# there orange = bright yellow (11) against the yellow band's dark
-# yellow — bands stay separated by brightness instead of orange
-# collapsing into red; 90+ takes the standard dark red. 8-color keeps
-# the basic set only.
+# the "deep" blue, a saturated violet (93) and a dark blood-red 88
+# (160 read too close to the yellows). The 16/8-color tiers use
+# magenta for violet — the palette's closest — so all five bands stay
+# distinguishable even on the basic eight colors.
 BAND_HI = (45.0, 60.0, 70.0, 90.0)
-TEXT_256 = (27, 46, 220, 214, 196)
-BLOB_256 = ((231, 17), (231, 22), (16, 226), (16, 214), (231, 88))
-TEXT_16 = (curses.COLOR_BLUE, curses.COLOR_GREEN, curses.COLOR_YELLOW,
-           11, curses.COLOR_RED)
+TEXT_256 = (27, 46, 141, 226, 196)
+BLOB_256 = ((231, 17), (231, 22), (231, 93), (16, 226), (231, 88))
+TEXT_16 = (curses.COLOR_BLUE, curses.COLOR_GREEN, curses.COLOR_MAGENTA,
+           curses.COLOR_YELLOW, curses.COLOR_RED)
 BLOB_16 = ((curses.COLOR_WHITE, curses.COLOR_BLUE),
            (curses.COLOR_WHITE, curses.COLOR_GREEN),
+           (curses.COLOR_WHITE, curses.COLOR_MAGENTA),
            (curses.COLOR_BLACK, curses.COLOR_YELLOW),
-           (curses.COLOR_BLACK, 11),
            (curses.COLOR_WHITE, curses.COLOR_RED))
-TEXT_8 = (curses.COLOR_BLUE, curses.COLOR_GREEN, curses.COLOR_YELLOW,
+TEXT_8 = (curses.COLOR_BLUE, curses.COLOR_GREEN, curses.COLOR_MAGENTA,
           curses.COLOR_YELLOW, curses.COLOR_RED)
 BLOB_8 = ((curses.COLOR_BLACK, curses.COLOR_BLUE),
           (curses.COLOR_BLACK, curses.COLOR_GREEN),
-          (curses.COLOR_BLACK, curses.COLOR_YELLOW),
+          (curses.COLOR_BLACK, curses.COLOR_MAGENTA),
           (curses.COLOR_BLACK, curses.COLOR_YELLOW),
           (curses.COLOR_BLACK, curses.COLOR_RED))
 STALE_AFTER = 10.0  # daemon writes every 3 s; >10 s old → stale
