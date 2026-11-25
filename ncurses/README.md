@@ -24,13 +24,15 @@ name; "?" when the inventory lacks it), so every hw id is visible —
 without -hw they share the compact single row. No/legacy json -> warns
 once and runs without names.
 
-Shows: cpu.Tctl/Tdie + cpu.W, every gpuN + gpu.W, nvme/disk temps
+Shows: cpu.Tctl/Tdie + cpu.W, every gpuN with its own watts (gpu0.W..)
+and the fleet total ΣW, nvme/disk temps
 (whatever the host logs — fields are parsed generically), MEM used /
 free (totals, from /proc/meminfo — no swap), the last sample's age with
 a LIVE/STALE flag on the bottom status line (with the refresh rate),
 and two-row dot bar graphs — · small dot,
 ● big dot, five levels per column, twice a sparkline's height,
-auto-fit to terminal width — for CPU and GPU-max, each with min/max/avg.
+auto-fit to terminal width — one per GPU (GPU0..GPUn, each card its own
+curve) plus CPU, each with min/max/avg.
 Memory is not in the log — the app polls /proc/meminfo itself every
 tick (text row only, no memory graph). Colors: temps green <70, yellow
 70–84,

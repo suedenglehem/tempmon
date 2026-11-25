@@ -22,7 +22,8 @@ Terminal viewer with -hw (`thermal_nc`):
   fields stay cpu.Tctl=package/control, cpu.Tdie=die/core0), cpu power
   (powercap RAPL "package-*" zone, energy_uj delta between samples → cpu.W;
   works on AMD too — the kernel exposes intel-rapl:0 named package-0),
-  gpu (nvidia-smi temps per GPU + power.draw summed over all GPUs → gpu.W),
+  gpu (nvidia-smi temps per GPU + power.draw → gpu.W summed over all GPUs
+  plus per-card gpu0.W..gpuN.W),
   every real SATA disk from lsblk (0B phantom entries like empty USB
   card-reader slots are skipped; smartctl, needs root), nvme (sysfs hwmon)
   every 3 s → /var/log/thermal.log; fields are dynamic — one per detected

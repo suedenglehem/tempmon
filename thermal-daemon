@@ -16,7 +16,8 @@
 #   cpu.W : powercap RAPL package zone, energy_uj delta between samples (W)
 #           — zone picked by name "package-*"; on AMD the kernel exposes
 #           intel-rapl:0 named package-0, so it works there too
-#   gpu.W : nvidia-smi power.draw, summed over all GPUs (W)
+#   gpu.W : nvidia-smi power.draw, summed over all GPUs (W); also one
+#           per-card field gpu0.W..gpuN.W (NA for a card without reading)
 #   sd*   : every real SATA disk from lsblk (0B entries like empty USB
 #           card-reader slots are skipped), via smartctl (smartmontools) —
 #           attr 194 "Temperature_Celsius" (SSDs / most HDDs) or the
@@ -208,9 +209,13 @@ sample() {
             _n=$((_n + 1))
         done
         [ "$_n" = 0 ] && line="$line gpu=NA"
-        _gw=$(timeout 5 nvidia-smi --query-gpu=power.draw --format=csv,noheader,nounits 2>/dev/null \
-            | awk 'NF { s += $1; c++ } END { if (c > 0) printf "%.1f", s; else print "NA" }')
-        line="$line gpu.W=$_gw"
+        # gpu.W = fleet sum (unchanged); gpu0.W..gpuN.W = each card's own
+        # power.draw. Web panels ignore the new keys (they match names
+        # exactly); the ncurses viewer prints one wattage per GPU row.
+        line="$line $(timeout 5 nvidia-smi --query-gpu=power.draw --format=csv,noheader,nounits 2>/dev/null \
+            | awk 'NF { if ($1 ~ /^[0-9.]+$/) { s += $1; per = sprintf("%s gpu%d.W=%.1f", per, n, $1) } \
+                       else { per = sprintf("%s gpu%d.W=NA", per, n) } n++ }
+                   END { if (n > 0) printf "gpu.W=%.1f%s", s, per; else printf "gpu.W=NA" }')"
     fi
 
     if [ -n "$SATA_DISKS" ] && [ "$HAVE_SMART" = 1 ]; then

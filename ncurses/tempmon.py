@@ -158,17 +158,6 @@ def series(hist, key):
     return [s.kv[key] for s in hist if key in s.kv]
 
 
-def series_max(hist, keys):
-    """Per-sample max across the given keys (i.e. worst GPU). Skips samples
-    that lack every key (rare: source disappearing mid-log)."""
-    out = []
-    for s in hist:
-        vals = [s.kv[k] for k in keys if k in s.kv]
-        if vals:
-            out.append(max(vals))
-    return out
-
-
 def spark2(vals, width, unicode_ok=True):
     """Two-row dot bar chart (· small dot, ● big dot), 5 levels per column
     — twice the old single-row sparkline's height, but no block glyphs, so
@@ -256,7 +245,7 @@ def draw(scr, log_path, hist_n, interval, color_ok, deg, unicode_ok, mem_now, hw
         if hw:
             put(y, 6, (name or "")[:10].ljust(10), A_DIM)
 
-    gpu_keys = sorted(k for k in kv if k.startswith("gpu") and k != "gpu.W")
+    gpu_keys = sorted(k for k in kv if re.fullmatch(r"gpu\d+", k))  # temps only
     others = {k: v for k, v in kv.items()
               if k.startswith("nvme") or re.match(r"^sd[a-z]$", k)}
     if hw:
@@ -280,16 +269,24 @@ def draw(scr, log_path, hist_n, interval, color_ok, deg, unicode_ok, mem_now, hw
     row += 1
     # one GPU per line: tr4 logs gpu0..gpu2 and "53/45/48°C" says nothing
     if gpu_keys:
+        # gpuN.W (per-card watts) when the daemon logs it; gpu.W = fleet total
+        percard = any(f"{k}.W" in kv for k in gpu_keys)
+        sumtag = "Σ" if unicode_ok else "tot "
         for i, k in enumerate(gpu_keys):
             if i == 0:
                 put(row, 1, "GPU", curses.A_BOLD)
                 if "gpu.W" in kv:
-                    gtxt = f"{k} {fmt(kv[k])}{deg}"
-                    put(row, max(22 + X, 6 + X + len(gtxt) + 3),
-                        f"{fmt(kv['gpu.W'])} W", A_DIM)
+                    if not percard:  # old logs: fleet sum had no per-card row
+                        gtxt = f"{k} {fmt(kv[k])}{deg}"
+                        put(row, max(22 + X, 6 + X + len(gtxt) + 3),
+                            f"{fmt(kv['gpu.W'])} W", A_DIM)
+                    elif len(gpu_keys) > 1:
+                        put(row, 34 + X, f"{sumtag}{fmt(kv['gpu.W'])} W", A_DIM)
             if hw:
                 put(row, 6, (gmap.get(k) or "?").ljust(10), A_DIM)
             put(row, 6 + X, f"{k} {fmt(kv[k])}{deg}", tattr(kv[k], color_ok))
+            if percard and f"{k}.W" in kv:
+                put(row, 22 + X, f"{fmt(kv[f'{k}.W'])} W", A_DIM)
             row += 1
     else:
         put(row, 1, "GPU", curses.A_BOLD)
@@ -335,8 +332,12 @@ def draw(scr, log_path, hist_n, interval, color_ok, deg, unicode_ok, mem_now, hw
         put(y + 2, 7, f"min {fmt(lo)}  max {fmt(hi)}  avg {fmt(sum(vals) / len(vals))}"
                       f"  ({len(vals)})", A_DIM)
 
+    # one graph per GPU (tr4's 3090/3080Ti/3090 each get their own curve)
     graph(row, "CPU", series(hist, "cpu.Tctl"))
-    graph(row + 4, "GPU", series_max(hist, gpu_keys))
+    gy = row + 4
+    for k in gpu_keys:
+        graph(gy, k.replace("gpu", "GPU"), series(hist, k))
+        gy += 4
 
     # status line: very bottom of the screen (graphs' guard keeps rows-1 free)
     age = (datetime.now() - last.ts).total_seconds()
